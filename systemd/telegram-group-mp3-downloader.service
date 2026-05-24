@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram group MP3 downloader bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/telegram-bots/telegram-group-mp3-downloader
+EnvironmentFile=/telegram-bots/telegram-group-mp3-downloader/.env
+ExecStart=/telegram-bots/telegram-group-mp3-downloader/.venv/bin/python -m telegram_group_mp3_downloader.bot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
