@@ -1,0 +1,101 @@
+--- a/mornye/core/solver.py
++++ b/mornye/core/solver.py
+@@ -1122,7 +1122,7 @@
+         if not source:
+             continue
+         query = dict(parse_qsl(source, keep_blank_values=True))
+-        grant = query.get("grant") or query.get("token") or query.get("code")
++        grant = query.get("grant") or query.get("code")
+         if grant and grant.strip():
+             return grant.strip()
+     return None
+@@ -1374,44 +1374,46 @@
+     callback_grant = _extract_grant_from_callback_url(siteurl)
+     network_grant: dict[str, str | None] = {"value": None}
+ 
++    pending_grant_responses: set[str] = set()
++
+     async def _on_response(event: dict) -> None:
+         if not capture_callback:
+             return
++        params = event.get("params", {})
++        response = params.get("response", {})
++        target = urlparse(response.get("url", ""))
++        expected = urlparse(siteurl)
++        if (target.scheme, target.netloc, target.path.rstrip("/")) != (
++            expected.scheme, expected.netloc, expected.path.rstrip("/") + "/verify"
++        ):
++            return
++        if not 200 <= response.get("status", 0) < 300:
++            return
++        request_id = params.get("requestId")
++        if request_id:
++            pending_grant_responses.add(request_id)
++
++    async def _on_loading_finished(event: dict) -> None:
++        request_id = event.get("params", {}).get("requestId")
++        if request_id not in pending_grant_responses:
++            return
++        pending_grant_responses.discard(request_id)
+         try:
+-            params = event.get("params", {})
+-            response = params.get("response", {})
+-            mime = (response.get("mimeType") or "").lower()
+-            if "json" not in mime:
+-                return
+-            request_id = params.get("requestId")
+             body = await tab.get_network_response_body(request_id)
+-            if not body:
+-                return
+             data = json.loads(body)
+-            if not isinstance(data, dict):
+-                return
+-            grant_val = data.get("grant")
+-            if isinstance(grant_val, str) and grant_val.strip():
+-                network_grant["value"] = grant_val.strip()
+-                logger.debug("[solver:net] grant captured from the network")
+-                return
+-            if network_grant["value"] is None:
+-                for key in ("token", "code"):
+-                    val = data.get(key)
+-                    if isinstance(val, str) and val.strip():
+-                        network_grant["value"] = val.strip()
+-                        break
++            grant = data.get("grant") if isinstance(data, dict) else None
++            if isinstance(grant, str) and grant.strip():
++                network_grant["value"] = grant.strip()
++                logger.debug("[solver:net] verified provider grant received")
+         except Exception:
+-            pass
++            logger.debug("[solver:net] provider grant response unavailable")
+ 
+     async def _enable_network_capture() -> None:
+         if not capture_callback:
+             return
+-        try:
+-            await tab.enable_network_events()
+-            await tab.on(NetworkEvent.RESPONSE_RECEIVED, _on_response)
+-        except Exception:
+-            pass
++        await tab.enable_network_events()
++        await tab.on(NetworkEvent.RESPONSE_RECEIVED, _on_response)
++        await tab.on(NetworkEvent.LOADING_FINISHED, _on_loading_finished)
+ 
+     # Substrings from pydoll/CDP exceptions that mean the browser/tab itself
+     # is gone (killed externally, websocket dropped, process died) rather
+@@ -1727,6 +1729,15 @@
+ 
+             await asyncio.sleep(0.3)
+ 
++        if capture_callback and not callback_grant:
++            with contextlib.suppress(Exception):
++                page_status = await tab.execute_script(
++                    "return document.querySelector('#status')?.textContent || '';",
++                    return_by_value=True,
++                )
++                status_text = _js_value(page_status)
++                if status_text:
++                    logger.warning("[solver] provider verification status: %s", str(status_text)[:160])
+         return token
+ 
+     token: str | None = None

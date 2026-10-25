@@ -1,0 +1,2 @@
+# Separate environment: the Telegram bot keeps its lighter dependency set.
+mornye @ git+https://github.com/mornyeapp/Mornye-Python.git@v1.0.4

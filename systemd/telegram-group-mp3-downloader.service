@@ -1,16 +1,18 @@
 [Unit]
-Description=Telegram group MP3 downloader bot
+Description=Telegram group audio and Mornye downloader
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/telegram-bots/telegram-group-mp3-downloader
-EnvironmentFile=/telegram-bots/telegram-group-mp3-downloader/.env
-ExecStart=/telegram-bots/telegram-group-mp3-downloader/.venv/bin/python -m telegram_group_mp3_downloader.bot
-Restart=always
+User=musicbot
+Group=musicbot
+WorkingDirectory=/opt/telegram-group-mp3-downloader
+EnvironmentFile=/opt/telegram-group-mp3-downloader/.env
+ExecStart=/opt/telegram-group-mp3-downloader/.venv/bin/python -m telegram_group_mp3_downloader.bot
+Restart=on-failure
 RestartSec=5
+UMask=0022
 
 [Install]
 WantedBy=multi-user.target

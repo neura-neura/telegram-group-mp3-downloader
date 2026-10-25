@@ -1,138 +1,136 @@
 <p align="center">
-  <img src="assets/icon.png" width="180" alt="Telegram Group Audio Downloader icon">
+  <img src="assets/icon.png" width="160" alt="Telegram Group Audio Downloader icon">
 </p>
 
 # Telegram Group Audio Downloader
 
-A Telegram bot that catalogs audio files posted in a group and downloads the eligible files to a server folder.
+Download group audio to your server and optionally send music links to a [Mornye](https://github.com/mornyeapp/Mornye-Python) CLI bridge. Capture your Spotify daylist, keep organized MP3 files and M3U playlists, and follow progress in one edited Telegram message.
 
-It tracks `.mp3`, `.m4a`, `.flac`, and `.wav` files, reports totals by type and size, and downloads only the file types that are safe to fetch through the public Telegram Bot API.
+## Features
 
-## What It Does
+- Catalog group audio in SQLite and download missing eligible files.
+- Keep scheduled checks quiet when nothing changes; send concise summaries for new files or errors.
+- Request skipped-file details with `/skipped` instead of receiving a long daily list.
+- Organize Telegram downloads by year/month/day and maintain a relative `All Tracks.m3u`.
+- Optionally handle supported song, album, playlist, and artist links through Mornye extensions.
+- Capture the current Spotify daylist with `/daylist`, using a new dated M3U for every successful request.
+- Convert provider audio to MP3 at 320 kbps, verify core tags, and remove intermediate FLAC files.
+- Skip tracks already present in earlier daylists without copying, moving, or linking the audio into the new folder. The new M3U points to the original file.
+- Detect completed requests, reject concurrent music jobs, and preserve completed files for retries.
+- Run under `systemd`, using configurable paths and owner allowlists.
 
-- Catalogs audio files seen by the bot in Telegram groups.
-- Reports total file count and total size, both overall and by extension.
-- Downloads missing `.mp3` and `.m4a` files up to the configured size limit.
-- Skips `.flac`, `.wav`, and oversized files with a clear skipped-file summary.
-- Edits one Telegram message repeatedly while downloads are running.
-- Supports group-specific persistent download folders.
-- Supports persistent scheduled scans and downloads through SQLite.
-- Lets you manage a group from a private chat with the bot.
-- Runs as a `systemd` service and starts automatically after reboot.
+## Quick start: Telegram audio
 
-## Telegram Limitations
+Use Python 3.12 or newer:
 
-With a normal bot token, Telegram does not let bots read the full historical chat log. The bot can only catalog files it receives as updates after it has been added to the group and is allowed to read messages.
+```bash
+git clone https://github.com/neura-neura/telegram-group-mp3-downloader.git
+cd telegram-group-mp3-downloader
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp .env.example .env
+```
 
-For best results, add the bot as an admin or disable Privacy Mode in BotFather and re-add it to the group.
+Edit `.env`: set `BOT_TOKEN` and your `ALLOWED_USER_IDS`. Obtain IDs with `/whoami` during initial setup, then restrict access before leaving the bot online. Add the bot to the group as an admin, or disable Privacy Mode in BotFather and re-add it.
 
-The public Telegram Bot API `getFile` endpoint can download files up to 20 MB. This project therefore downloads only `.mp3` and `.m4a` files up to `MAX_DOWNLOAD_BYTES`. Other tracked files remain visible in scans and are listed as skipped during downloads.
+```bash
+.venv/bin/python -m telegram_group_mp3_downloader.bot
+```
+
+Mornye is disabled by default and uses a separate environment. Follow **[Mornye installation and Spotify setup](docs/mornye.md)** to enable it.
 
 ## Commands
 
-### General
+| Command | Purpose |
+| --- | --- |
+| `/help` | Show commands. |
+| `/whoami` | Show your Telegram user ID and chat ID. |
+| `/groups`, `/use_group <id>`, `/group` | Select and inspect a group from private chat. |
+| `/scan` | Show known audio totals by file type. |
+| `/download [folder]` | Download missing eligible Telegram files. |
+| `/sync [folder]` | Scan and download missing Telegram files. |
+| `/folder [path]`, `/folder reset` | Show, save, or clear a group-specific target. |
+| `/schedule <minutes> [download] [folder]` | Schedule a scan or scan-and-download. |
+| `/schedules`, `/cancel_schedule <id>` | List or cancel persistent schedules. |
+| `/skipped` | Download a detailed skipped-file report on request. |
+| `/spotify` | Show Spotify connection status and setup guidance. |
+| `/daylist [Spotify playlist URL]` | Capture the current daylist; save a new URL in private chat. |
+| A supported music URL | Start a Mornye download for the configured owner. |
 
-- `/ayuda` or `/help` - show commands.
-- `/whoami` - show your Telegram user ID and current chat ID.
-- `/info_grupo` - show the selected group information.
-- `/grupos` - list groups known by the bot.
-- `/usar_grupo <id>` - choose which group private-chat commands should target.
+Existing Spanish command aliases remain supported. Bot responses and the published command menu are in English.
 
-### Scan And Download
+## Library layout
 
-- `/scan` or `/resumen` - show known audio totals.
-- `/descargar [folder]` - download missing eligible files.
-- `/sincronizar [folder]` - scan and download missing eligible files.
+```text
+music/
+├── Telegram/
+│   ├── YYYY/MM/DD/
+│   └── All Tracks.m3u
+└── Spotify/
+    ├── Daylists/YYYY-MM-DD/Daylist name - snapshot/
+    ├── Albums/Artist/Album/
+    ├── Singles/Artist/Album/
+    ├── Playlists/Identifier/
+    └── Artists/
+```
 
-If no folder is provided, the bot uses the group-specific persistent folder. If none is set, it uses `DEFAULT_DOWNLOAD_DIR`. If that is not configured either, it creates a folder under `DOWNLOAD_BASE`.
+Set `DOWNLOAD_BASE` to the Telegram directory and `MUSIC_ROOT` to its parent. Mornye collection playlists live at their category or collection root and reference audio by relative path.
 
-### Folders
+M3U filenames describe their content:
 
-- `/carpeta` - show the active download folder.
-- `/carpeta <folder>` - persist a download folder for the selected group.
-- `/carpeta reset` - remove the group-specific folder and fall back to the global default.
+```text
+Album - Artist - Album title [identifier].m3u
+Song - Artist - Song title [identifier].m3u
+Playlist - Playlist name [identifier].m3u
+Daylist - 2026-01-15 09-30-00 - Daylist name.m3u
+```
 
-### Scheduling
+Each `/daylist` request creates a new playlist file even if the snapshot and audio are unchanged. Requests in the same second receive a numeric suffix. Unavailable tracks are excluded; no empty M3U is created when every track fails. Keep the original audio folders when moving a collection of daylists: later M3Us can reference earlier folders.
 
-- `/programar <minutes>` - schedule a recurring scan.
-- `/programar <minutes> descargar [folder]` - schedule a recurring scan and download.
-- `/programaciones` - list active schedules.
-- `/cancelar_programacion <id>` - cancel a schedule.
+## Repeat requests and progress
 
-Schedules are stored in SQLite and survive service restarts and server reboots.
+Music jobs edit one Telegram message approximately every three seconds, then replace it with the final summary. While a job runs, the same request points you back to its progress; another request asks you to wait and resend it afterward. There is no background queue. A process-level lock also prevents a terminal job from racing a bot job.
 
-## Private Chat Workflow
-
-You can manage a group from a private chat with the bot.
-
-1. Add the bot to the target group.
-2. Make it admin, or disable Privacy Mode in BotFather.
-3. Send any message or command in the group once so the bot registers it.
-4. In private chat, run `/grupos`.
-5. Select the group with `/usar_grupo <id>`.
-6. Use `/info_grupo`, `/scan`, `/descargar`, `/sincronizar`, and scheduling commands privately.
-
-If the bot knows only one group, it selects that group automatically.
+Completed requests are skipped only after their MP3 files pass format and core-tag checks. Missing files, changed collections, and incomplete reports allow another attempt. Daylists are always read again because their contents change. Daylist deduplication uses exact Spotify track IDs from previous successful reports, not titles alone.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+See [`.env.example`](.env.example) for all settings.
 
-```env
-BOT_TOKEN=put-your-token-here
-DB_PATH=./data/bot.sqlite3
-DOWNLOAD_BASE=./downloads
-DEFAULT_DOWNLOAD_DIR=
-ALLOWED_USER_IDS=
-ALLOWED_CHAT_IDS=
-ALLOW_ABSOLUTE_DOWNLOAD_PATHS=false
-MAX_DOWNLOAD_BYTES=20971520
-BOT_API_BASE_URL=https://api.telegram.org/bot
-BOT_API_FILE_BASE_URL=https://api.telegram.org/file/bot
-APP_TIMEZONE=America/Mexico_City
-PROGRESS_EDIT_SECONDS=2.5
-SCHEDULER_POLL_SECONDS=30
-```
+| Setting | Purpose |
+| --- | --- |
+| `BOT_TOKEN` | Telegram token from BotFather. Keep it private. |
+| `ALLOWED_USER_IDS`, `ALLOWED_CHAT_IDS` | Telegram access restrictions. Empty lists leave the corresponding general Telegram restriction open. |
+| `DB_PATH` | Persistent SQLite catalog and schedules. |
+| `DOWNLOAD_BASE`, `DEFAULT_DOWNLOAD_DIR` | Base and optional default Telegram destination. Group-specific `/folder` settings take precedence. |
+| `ALLOW_ABSOLUTE_DOWNLOAD_PATHS` | Allow destinations outside the configured base. Defaults to `false`. |
+| `MAX_DOWNLOAD_BYTES` | Per-file Telegram download limit. |
+| `BOT_API_BASE_URL`, `BOT_API_FILE_BASE_URL` | Telegram API endpoints; configurable for a local Bot API server. |
+| `APP_TIMEZONE` | Time zone for dated folders, captures, and displayed schedules. Defaults to `UTC`. |
+| `PROGRESS_EDIT_SECONDS`, `SCHEDULER_POLL_SECONDS` | Telegram progress interval and scheduling poll interval. |
+| `MORNYE_ENABLED` | Enable the optional music bridge after installation. |
+| `MUSIC_ALLOWED_USER_IDS` | Music owners; falls back to `ALLOWED_USER_IDS` when blank. Music access is denied if both are empty. |
+| `MUSIC_ROOT`, `MORNYE_HOME`, `MORNYE_PYTHON` | Music library, private Mornye runtime, and worker interpreter. |
+| `CHROME_PATH` | Chrome/Chromium executable used by provider verification. |
 
-Important variables:
+## Telegram limits
 
-- `BOT_TOKEN`: Telegram bot token from BotFather.
-- `DOWNLOAD_BASE`: base folder for relative download paths.
-- `DEFAULT_DOWNLOAD_DIR`: global default target for downloads and syncs.
-- `ALLOWED_USER_IDS`: optional comma-separated allowlist of Telegram user IDs.
-- `ALLOWED_CHAT_IDS`: optional comma-separated allowlist of group IDs.
-- `ALLOW_ABSOLUTE_DOWNLOAD_PATHS`: set to `true` to allow absolute download paths.
-- `MAX_DOWNLOAD_BYTES`: per-file download limit. The public Bot API limit is 20 MB.
+A bot cannot read an entire group's historical chat log. It catalogs updates it receives after joining and being allowed to read messages. The default public Bot API download limit is 20 MB: the bot tracks `.mp3`, `.m4a`, `.flac`, and `.wav`, but only downloads eligible `.mp3` and `.m4a` files through this route. Mornye provider downloads use a separate pipeline.
 
-## Install
+## Services, maintenance, and development
 
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python -m telegram_group_mp3_downloader.bot
-```
+- [Deployment and troubleshooting](docs/deployment.md)
+- [Mornye integration, registries, and OAuth](docs/mornye.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security and private data](SECURITY.md)
 
-## systemd
-
-The included service file expects the app at:
-
-```text
-/telegram-bots/telegram-group-mp3-downloader
-```
-
-Install it with:
+Offline tests use generated audio and mocked services. No account credentials are required:
 
 ```bash
-cp systemd/telegram-group-mp3-downloader.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable telegram-group-mp3-downloader.service
-systemctl start telegram-group-mp3-downloader.service
+.venv/bin/python -m pip install mutagen
+# Install ffmpeg with your system package manager.
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-Check logs:
-
-```bash
-journalctl -u telegram-group-mp3-downloader.service -f
-```
+The bundled Mornye compatibility patches target version 1.0.4. Do not replace that environment with a newer release without reviewing the patches. Upstream Mornye code is MIT-licensed; its notice is included in [LICENSE-Mornye](integrations/mornye/LICENSE-Mornye).

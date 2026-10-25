@@ -1,0 +1,136 @@
+--- a/mornye/core/signed_session_mobile.py
++++ b/mornye/core/signed_session_mobile.py
+@@ -297,7 +297,11 @@
+         acting directly on the Headers object already constructed by the client.
+         """
+         if self._client is None:
+-            self._client = httpx.AsyncClient(headers=self._client_headers, http2=True)
++            if os.environ.get("MORNYE_BROWSER_NETWORK") == "1":
++                from .server_browser_network import BrowserHTTPClient
++                self._client = BrowserHTTPClient(headers=self._client_headers)
++            else:
++                self._client = httpx.AsyncClient(headers=self._client_headers, http2=True)
+             # Remove the header from the client's actual Headers object,
+             # not from the input dict (which at this point has already been merged
+             # with httpx's internal defaults).
+@@ -531,21 +535,70 @@
+                 msg,
+             )
+ 
+-        dummy_callback = f"http://{_LOCAL_CALLBACK_HOST}:1{_LOCAL_CALLBACK_PATH}"
+-        challenge_url = self._build_challenge_url_with_callback(
+-            self.pending_challenge_id,
+-            dummy_callback,
+-        )
+-
++        if hasattr(self._client, "verify"):
++            callback_state = secrets.token_urlsafe(32)
++            callback = "mornye://session-grant?" + urlencode(
++                {"cb_version":"v2grant", "state":callback_state})
++            challenge_url = f"{self.base_url}{self.endpoints['challenge']}?" + urlencode(
++                {"id":self.pending_challenge_id, "cb":callback})
++            grant = await self._client.verify(challenge_url, timeout)
++            await self.exchange_grant(grant)
++            return
++
++        # Use the same local callback contract as the app. A dead port can
++        # discard the redirect before CDP reads it, despite successful verify.
++        from http.server import BaseHTTPRequestHandler, HTTPServer
++        from urllib.parse import parse_qs
++        import hmac as _hmac
++        callback_state = secrets.token_urlsafe(32)
++        delivered = {"grant": None}
++        class GrantHandler(BaseHTTPRequestHandler):
++            def log_message(self, *args):
++                pass
++            def do_GET(self):
++                parsed = urlparse(self.path)
++                query = parse_qs(parsed.query)
++                if parsed.path != "/callback" or not _hmac.compare_digest(
++                    query.get("state", [""])[0], callback_state
++                ):
++                    self.send_error(400)
++                    return
++                grant = query.get("grant", [""])[0].strip()
++                if not grant:
++                    self.send_error(400)
++                    return
++                delivered["grant"] = grant
++                self.send_response(200)
++                self.send_header("Content-Type", "text/html; charset=utf-8")
++                self.end_headers()
++                self.wfile.write(b"<h1>Verified</h1><p>Returning to Mornye.</p>")
++        listener = HTTPServer(("127.0.0.1", 0), GrantHandler)
++        callback = f"http://127.0.0.1:{listener.server_port}/callback"
++        callback += "?" + urlencode({"cb_version":"v2grant", "state":callback_state})
++        challenge_url = f"{self.base_url}{self.endpoints['challenge']}?" + urlencode(
++            {"id":self.pending_challenge_id,"cb":callback}
++        )
++        thread = threading.Thread(target=listener.serve_forever, daemon=True)
++        thread.start()
+         from .solver import solve_with_callback
+-
+-        _token, grant = await asyncio.to_thread(
+-            solve_with_callback,
+-            self.pending_sitekey,
+-            challenge_url,
+-            int(timeout),
+-            hold_open_seconds,
+-        )
++        grant = None
++        cancel_event = threading.Event()
++        try:
++            try:
++                _token, captured = await asyncio.to_thread(
++                    solve_with_callback, self.pending_sitekey, challenge_url,
++                    int(timeout), hold_open_seconds, cancel_event=cancel_event,
++                )
++                grant = delivered["grant"] or captured
++            except TimeoutError:
++                grant = delivered["grant"]
++                if not grant:
++                    raise
++        finally:
++            cancel_event.set()
++            listener.shutdown()
++            listener.server_close()
++            thread.join(timeout=2)
+ 
+         if not grant:
+             msg = (
+@@ -1287,6 +1340,7 @@
+     grant_input: Callable[[], str] | None = None,
+     timeout: float = 300,
+     use_turnstile_browser: bool = True,
++    _retry_verification: bool = True,
+ ) -> dict:
+     """Perform an authenticated signed request with automatic session recovery.
+ 
+@@ -1425,6 +1479,9 @@
+         # sometimes a large manifest, and never an envelope.
+         err = None if ok else parse_session_error(getattr(resp, "content", b""))
+         wait = retry_after or (err.retry_after_seconds if err else 0)
++        if err is not None:
++            logger.info("[signed_session:%s] refusal status=%s origin=%s code=%s retry=%s",
++                client.namespace, resp.status_code, err.origin, err.code, err.retry_mode)
+ 
+         if is_ticket:
+             granted = False
+@@ -1478,6 +1535,17 @@
+         ):
+             retry_auth_url = await client.bootstrap()
+             if isinstance(retry_auth_url, str) and retry_auth_url:
++                if _retry_verification and use_turnstile_browser:
++                    # Match the app: complete a newly required verification,
++                    # then retry this operation once. The normal auth lock,
++                    # saved session and failure backoff still apply.
++                    return await perform_signed_fetch(
++                        client, method, path, body, headers,
++                        on_verification_url=on_verification_url,
++                        grant_input=grant_input, timeout=timeout,
++                        use_turnstile_browser=use_turnstile_browser,
++                        _retry_verification=False,
++                    )
+                 return {"needsVerification": True, "auth_url": retry_auth_url}
+ 
+         result = {

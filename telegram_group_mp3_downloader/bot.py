@@ -650,16 +650,16 @@ def display_chat_title(chat: Chat | None, row: sqlite3.Row | None = None) -> str
         return chat.title or chat.full_name or chat.username or str(chat.id)
     if row:
         return row["title"] or row["username"] or str(row["chat_id"])
-    return "grupo desconocido"
+    return "unknown group"
 
 
 def format_group_list(rows: list[sqlite3.Row]) -> str:
-    lines = ["Grupos conocidos:"]
+    lines = ["Known groups:"]
     for row in rows:
-        title = row["title"] or row["username"] or "sin titulo"
-        lines.append(f"{title} | ID: {row['chat_id']} | tipo: {row['type']}")
+        title = row["title"] or row["username"] or "untitled"
+        lines.append(f"{title} | ID: {row['chat_id']} | type: {row['type']}")
     lines.append("")
-    lines.append("Usa /usar_grupo <id> para consultar ese grupo por privado.")
+    lines.append("Use /use_group <id> to manage that group in private chat.")
     return "\n".join(lines)
 
 
@@ -675,7 +675,7 @@ def human_size(size: int | None) -> str:
     return f"{value:.2f} TB"
 
 
-def safe_filename(value: str, fallback: str = "archivo") -> str:
+def safe_filename(value: str, fallback: str = "file") -> str:
     value = value.strip().replace("\\", "_").replace("/", "_")
     value = re.sub(r"[\x00-\x1f<>:\"|?*]+", "_", value)
     value = re.sub(r"\s+", " ", value).strip(" .")
@@ -715,7 +715,7 @@ def resolve_target_dir(
         target = candidate.resolve()
         if not config.allow_absolute_download_paths and not is_relative_to(target, config.download_base.resolve()):
             raise ValueError(
-                "Las rutas absolutas estan deshabilitadas. Usa una subcarpeta o activa "
+                "Absolute paths are disabled. Use a subfolder or set "
                 "ALLOW_ABSOLUTE_DOWNLOAD_PATHS=true."
             )
         return target
@@ -723,7 +723,7 @@ def resolve_target_dir(
     target = (config.download_base / candidate).resolve()
     base = config.download_base.resolve()
     if not is_relative_to(target, base):
-        raise ValueError("La carpeta debe quedar dentro de DOWNLOAD_BASE.")
+        raise ValueError("The folder must be inside DOWNLOAD_BASE.")
     return target
 
 
@@ -739,7 +739,8 @@ async def resolve_download_target(
     return resolve_target_dir(get_config(context), chat, chat_id, folder_arg, default_dir)
 
 
-def local_path_for_file(target_dir: Path, file_row: sqlite3.Row) -> Path:
+def local_path_for_file(config: Config, target_dir: Path, file_row: sqlite3.Row) -> Path:
+    date_folder = datetime.now(config.app_timezone).strftime("%Y/%m/%d")
     extension = file_row["extension"]
     original_name = file_row["file_name"] or f"{file_row['file_unique_id']}{extension}"
     safe_name = safe_filename(original_name, f"{file_row['file_unique_id']}{extension}")
@@ -748,12 +749,12 @@ def local_path_for_file(target_dir: Path, file_row: sqlite3.Row) -> Path:
     unique = safe_filename(str(file_row["file_unique_id"])[:16], "file")
     stem = Path(safe_name).stem[:90] or "audio"
     filename = f"{stem}__{unique}{extension}"
-    return target_dir / extension.lstrip(".") / filename
+    return target_dir / date_folder / filename
 
 
 def file_label(file_row: sqlite3.Row) -> str:
     name = file_row["file_name"] or f"{file_row['file_unique_id']}{file_row['extension']}"
-    return safe_filename(name, "archivo")
+    return safe_filename(name, "file")
 
 
 def add_omitted_preview(state: DownloadState, reason: str, file_row: sqlite3.Row) -> None:
@@ -816,9 +817,9 @@ def is_command_allowed(update: Update, config: Config) -> tuple[bool, str]:
     chat = update.effective_chat
     user = update.effective_user
     if chat and chat.type != "private" and config.allowed_chat_ids and chat.id not in config.allowed_chat_ids:
-        return False, "Este grupo no esta autorizado en ALLOWED_CHAT_IDS."
+        return False, "This group is not authorized in ALLOWED_CHAT_IDS."
     if user and config.allowed_user_ids and user.id not in config.allowed_user_ids:
-        return False, "Tu usuario no esta autorizado en ALLOWED_USER_IDS."
+        return False, "Your user is not authorized in ALLOWED_USER_IDS."
     return True, ""
 
 
@@ -855,14 +856,14 @@ async def resolve_target_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
     if source_chat.type != "private":
         if not is_group_chat_type(source_chat.type):
             if message:
-                await message.reply_text("Este comando necesita un grupo o un privado con grupo seleccionado.")
+                await message.reply_text("Use this command in a group or select a group in private chat.")
             return None
         return TargetChat(chat_id=source_chat.id, chat=source_chat, from_private=False)
 
     user = update.effective_user
     if not user:
         if message:
-            await message.reply_text("No pude identificar tu usuario para elegir grupo.")
+            await message.reply_text("Could not identify your user to select a group.")
         return None
 
     store = get_store(context)
@@ -876,7 +877,7 @@ async def resolve_target_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif not groups:
             if message:
                 await message.reply_text(
-                    "Todavia no tengo ningun grupo registrado. Manda cualquier mensaje o /info_grupo dentro del grupo una vez; despues ya puedes consultarme por privado."
+                    "No groups registered yet. Send a message or /group in the group once, then manage it here in private chat."
                 )
             return None
         else:
@@ -887,77 +888,61 @@ async def resolve_target_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
     target_chat_id = int(target_row["chat_id"])
     if config.allowed_chat_ids and target_chat_id not in config.allowed_chat_ids:
         if message:
-            await message.reply_text("El grupo seleccionado no esta autorizado en ALLOWED_CHAT_IDS.")
+            await message.reply_text("The selected group is not authorized in ALLOWED_CHAT_IDS.")
         return None
 
     target_chat = await fetch_target_chat(context, target_chat_id, target_row)
     if target_chat is None:
         if message:
-            await message.reply_text("No pude acceder al grupo seleccionado. Revisa que siga agregado al grupo.")
+            await message.reply_text("Could not access the selected group. Check that the bot is still a member.")
         return None
     return TargetChat(chat_id=target_chat_id, chat=target_chat, from_private=True)
 
 
 def format_stats(title: str, stats: dict[str, Any], new_since_last: int, include_note: bool = True) -> str:
     lines = [
-        "Resumen de audio",
-        f"Grupo: {title}",
-        f"Total: {stats['total_count']} archivos | {human_size(stats['total_size'])}",
-        f"Nuevos desde el ultimo scan: {new_since_last}",
+        "Audio summary",
+        f"Group: {title}",
+        f"Total: {stats['total_count']} files | {human_size(stats['total_size'])}",
+        f"New since the last scan: {new_since_last}",
         "",
-        "Por tipo:",
+        "By type:",
     ]
     if stats["by_extension"]:
         for item in stats["by_extension"]:
-            lines.append(f"{item['extension']}: {item['count']} archivos | {human_size(item['size'])}")
+            lines.append(f"{item['extension']}: {item['count']} files | {human_size(item['size'])}")
     else:
-        lines.append("Sin archivos catalogados todavia.")
+        lines.append("No files cataloged yet.")
 
     if include_note:
         lines.extend(
             [
                 "",
-                "Nota: con Bot API solo puedo contar archivos que me hayan llegado desde que estoy en el grupo.",
+                "Note: the Bot API can only catalog files received since the bot joined the group.",
             ]
         )
     return "\n".join(lines)
 
 
 def progress_text(state: DownloadState, final: bool = False) -> str:
-    processed = (
-        state.done_files
-        + state.existing_files
-        + state.omitted_type_files
-        + state.omitted_size_files
-        + state.error_files
-    )
-    percent = 0.0
-    if state.total_download_bytes:
-        percent = min(100.0, (state.done_bytes + state.current_bytes) * 100 / state.total_download_bytes)
-    elif final:
-        percent = 100.0
-    elapsed = max(1.0, time.monotonic() - state.started_at)
-    speed = (state.done_bytes + state.current_bytes) / elapsed
-    title = "Descarga terminada" if final else "Descarga en curso"
-    lines = [
-        title,
-        f"Destino: {state.target_dir}",
-        f"Archivos conocidos: {processed}/{state.total_known_files}",
-        f"Descargables: {state.eligible_files} | ok {state.done_files} | ya existentes {state.existing_files} | errores {state.error_files}",
-        f"Omitidos: tipo {state.omitted_type_files} | peso {state.omitted_size_files}",
-        f"Datos descargables: {human_size(state.done_bytes + state.current_bytes)} / {human_size(state.total_download_bytes)} ({percent:.1f}%)",
-        f"Velocidad: {human_size(int(speed))}/s",
-    ]
-    if state.current_name and not final:
-        lines.append(f"Actual: {state.current_name} ({human_size(state.current_bytes)} / {human_size(state.current_total)})")
-    if state.last_error:
-        lines.append(f"Ultimo error: {state.last_error[:220]}")
-    if final and state.omitted_preview:
-        lines.append("")
-        lines.append("Lista de omitidos:")
-        lines.extend(state.omitted_preview)
-        if state.omitted_preview_overflow:
-            lines.append(f"... y {state.omitted_preview_overflow} mas.")
+    if final:
+        lines = ["🎵 Sync complete"]
+        if state.done_files:
+            lines.append(f"{state.done_files} new · {human_size(state.done_bytes)}")
+        elif not state.error_files:
+            lines.append("Up to date. No new songs to download.")
+        if state.error_files:
+            lines.append(f"⚠️ {state.error_files} downloads failed. Retry with /sync.")
+        omitted = state.omitted_type_files + state.omitted_size_files
+        if omitted:
+            lines.append(f"{omitted} files outside Telegram download limits. Details: /skipped")
+        return "\n".join(lines)
+    completed = state.done_files + state.error_files
+    pending = state.eligible_files - state.existing_files
+    lines = [f"🎵 Downloading {completed}/{pending}",
+             f"{human_size(state.done_bytes + state.current_bytes)} / {human_size(state.total_download_bytes)}"]
+    if state.current_name:
+        lines.append(state.current_name[:120])
     return "\n".join(lines)
 
 
@@ -981,6 +966,8 @@ async def maybe_edit_progress(
     force: bool = False,
     final: bool = False,
 ) -> None:
+    if message is None:
+        return
     now = time.monotonic()
     if force or now - last_edit[0] >= config.progress_edit_seconds:
         last_edit[0] = now
@@ -999,7 +986,7 @@ async def stream_download(
     tg_file = await context.bot.get_file(file_row["file_id"])
     file_path = tg_file.file_path
     if not file_path:
-        raise RuntimeError("Telegram no devolvio file_path para este archivo.")
+        raise RuntimeError("Telegram did not return a file_path for this file.")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_destination = destination.with_name(f"{destination.name}.part")
@@ -1023,7 +1010,7 @@ async def stream_download(
     else:
         source = Path(file_path)
         if not source.exists():
-            raise RuntimeError(f"El Bot API local devolvio una ruta que no existe: {source}")
+            raise RuntimeError(f"The local Bot API returned a path that does not exist: {source}")
         await asyncio.to_thread(shutil.copyfile, source, temp_destination)
         state.current_bytes = temp_destination.stat().st_size
         await maybe_edit_progress(progress_message, state, config, last_edit, force=True)
@@ -1047,6 +1034,23 @@ async def create_scan_snapshot(context: ContextTypes.DEFAULT_TYPE | Application,
     return stats, new_since_last
 
 
+def append_download_to_playlist(destination: Path, target_dir: Path) -> None:
+    """Keep a player-portable playlist without server-specific mount paths."""
+    try:
+        relative = destination.relative_to(target_dir).as_posix()
+        playlist = target_dir / 'All Tracks.m3u'
+        existing = playlist.read_text(encoding='utf-8').splitlines() if playlist.exists() else []
+        if relative in existing:
+            return
+        with playlist.open('a', encoding='utf-8') as handle:
+            if not existing:
+                handle.write('#EXTM3U\n')
+            label = destination.stem.replace('\n', ' ').replace('\r', ' ')
+            handle.write(f'#EXTINF:-1,{label}\n{relative}\n')
+    except OSError:
+        LOGGER.exception('Could not update library playlist')
+
+
 async def download_missing_for_chat(
     context: ContextTypes.DEFAULT_TYPE | Application,
     chat_id: int,
@@ -1060,7 +1064,8 @@ async def download_missing_for_chat(
     lock_map: dict[int, asyncio.Lock] = holder.bot_data.setdefault("download_locks", {})
     lock = lock_map.setdefault(chat_id, asyncio.Lock())
     if lock.locked():
-        await safe_edit(progress_message, "Ya hay una descarga en curso para este grupo.")
+        if progress_message is not None:
+            await safe_edit(progress_message, "A download is already running for this group.")
         return DownloadState(0, 0, target_dir)
 
     async with lock:
@@ -1083,8 +1088,11 @@ async def download_missing_for_chat(
                 omitted_size += 1
                 omitted_size_bytes += size
                 continue
-            destination = local_path_for_file(target_dir, row)
             download = await store.get_download(int(row["id"]), str(target_dir))
+            if download and download["status"] == "downloaded" and download["file_path"]:
+                destination = Path(download["file_path"])
+            else:
+                destination = local_path_for_file(config, target_dir, row)
             expected_size = size
             exists_ok = destination.exists() and (expected_size == 0 or destination.stat().st_size == expected_size)
             if download and download["status"] == "downloaded" and exists_ok:
@@ -1124,6 +1132,7 @@ async def download_missing_for_chat(
                 await store.mark_download_started(file_pk, str(target_dir), str(destination))
                 downloaded_bytes = await stream_download(context, row, destination, state, progress_message, last_edit)
                 await store.mark_download_done(file_pk, str(target_dir), str(destination), downloaded_bytes)
+                append_download_to_playlist(destination, target_dir)
                 state.done_files += 1
                 state.done_bytes += downloaded_bytes
                 state.current_name = ""
@@ -1182,25 +1191,56 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     text = "\n".join(
         [
-            "Comandos disponibles:",
-            "/info_grupo - confirma que estoy en el grupo correcto",
-            "/grupos - lista grupos conocidos para usar por privado",
-            "/usar_grupo <id> - fija el grupo que consulto por privado",
-            "/scan o /resumen - conteo total y por tipo",
-            "/carpeta [ruta] - muestra o guarda la carpeta persistente",
-            "/descargar [carpeta] - baja faltantes a una carpeta",
-            "/sincronizar [carpeta] - scan + descarga faltantes",
-            "/programar <minutos> [descargar] [carpeta] - agenda escaneo o descarga",
-            "/programaciones - lista agendas activas",
-            "/cancelar_programacion <id> - cancela una agenda",
-            "/whoami - muestra tu ID para permisos",
+            "Available commands:",
+            "/group - show the selected group",
+            "/groups - list known groups for private management",
+            "/use_group <id> - select a group for private commands",
+            "/scan - show total counts and counts by file type",
+            "/folder [path] - show or save the persistent folder",
+            "/download [folder] - download missing files",
+            "/sync [folder] - scan and download missing files",
+            "/schedule <minutes> [download] [folder] - schedule scans or downloads",
+            "/schedules - list active schedules",
+            "/cancel_schedule <id> - cancel a schedule",
+            "/whoami - show your user ID for permissions",
+            "/skipped - get details about skipped files",
+            "/daylist - download your Spotify daylist",
+            "/spotify - Spotify connection status and setup",
+            "Send a supported music link to download it automatically.",
             "",
-            "La descarga solo toma .mp3 y .m4a de hasta 20 MB; lo demas sale como omitido.",
+            "Telegram downloads include eligible .mp3 and .m4a files; other files are listed as skipped.",
             "",
-            "Tip: para ver audios nuevos del grupo, agregame como admin o desactiva Privacy Mode en BotFather.",
+            "Tip: add the bot as an admin or disable Privacy Mode in BotFather to receive group audio.",
         ]
     )
     await update.effective_message.reply_text(text)
+
+
+async def omitted_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update, context):
+        return
+    target = await resolve_target_chat(update, context)
+    if not target:
+        return
+    config = get_config(context)
+    rows = await get_store(context).list_files(target.chat_id)
+    lines = ["Files skipped from Telegram downloads", ""]
+    for row in rows:
+        size = int(row["file_size"] or 0)
+        if row["extension"] not in DOWNLOADABLE_EXTENSIONS:
+            reason = "format"
+        elif config.max_download_bytes > 0 and size > config.max_download_bytes:
+            reason = "size"
+        else:
+            continue
+        lines.append(f"{reason}: {file_label(row)} ({human_size(size)})")
+    if len(lines) == 2:
+        await update.effective_message.reply_text("No skipped files.")
+        return
+    import io
+    report = io.BytesIO("\n".join(lines).encode("utf-8"))
+    await update.effective_message.reply_document(document=report, filename="skipped.txt",
+        caption=f"{len(lines) - 2} skipped files. This report is only sent on request.")
 
 
 async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1209,15 +1249,15 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     chat = update.effective_chat
     lines = [
-        f"Tu user_id: {user.id if user else 'desconocido'}",
-        f"Chat_id actual: {chat.id if chat else 'desconocido'}",
+        f"Your user ID: {user.id if user else 'desconocido'}",
+        f"Current chat ID: {chat.id if chat else 'desconocido'}",
     ]
     if chat and chat.type == "private" and user:
         target = await get_store(context).get_user_target(user.id)
         if target:
-            lines.append(f"Grupo seleccionado: {target['title'] or target['chat_id']} ({target['chat_id']})")
+            lines.append(f"Selected group: {target['title'] or target['chat_id']} ({target['chat_id']})")
         else:
-            lines.append("Grupo seleccionado: ninguno")
+            lines.append("Selected group: none")
     await update.effective_message.reply_text("\n".join(lines))
 
 
@@ -1227,7 +1267,7 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     rows = await get_store(context).list_groups()
     if not rows:
         await update.effective_message.reply_text(
-            "Todavia no tengo grupos registrados. Manda cualquier mensaje o /info_grupo dentro del grupo una vez."
+            "No groups registered yet. Send a message or /group in the group once."
         )
         return
     await update.effective_message.reply_text(format_group_list(rows))
@@ -1238,7 +1278,7 @@ async def use_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     user = update.effective_user
     if not user:
-        await update.effective_message.reply_text("No pude identificar tu usuario.")
+        await update.effective_message.reply_text("Could not identify your user.")
         return
     rows = await get_store(context).list_groups()
     if not context.args:
@@ -1246,29 +1286,29 @@ async def use_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             row = rows[0]
             await get_store(context).set_user_target(user.id, int(row["chat_id"]))
             await update.effective_message.reply_text(
-                f"Grupo seleccionado: {row['title'] or row['chat_id']} ({row['chat_id']})"
+                f"Selected group: {row['title'] or row['chat_id']} ({row['chat_id']})"
             )
             return
         if rows:
             await update.effective_message.reply_text(format_group_list(rows))
         else:
             await update.effective_message.reply_text(
-                "No tengo grupos registrados todavia. Manda cualquier mensaje o /info_grupo dentro del grupo una vez."
+                "No groups registered yet. Send a message or /group in the group once."
             )
         return
 
     try:
         chat_id = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("Usa el ID numerico del grupo: /usar_grupo <id>")
+        await update.effective_message.reply_text("Use the numeric group ID: /use_group <id>")
         return
 
     row = await get_store(context).get_chat_row(chat_id)
     if not row or not is_group_chat_type(row["type"]):
-        await update.effective_message.reply_text("No encontre ese grupo. Revisa /grupos.")
+        await update.effective_message.reply_text("Group not found. Check /groups.")
         return
     await get_store(context).set_user_target(user.id, chat_id)
-    await update.effective_message.reply_text(f"Grupo seleccionado: {row['title'] or chat_id} ({chat_id})")
+    await update.effective_message.reply_text(f"Selected group: {row['title'] or chat_id} ({chat_id})")
 
 
 async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1281,10 +1321,10 @@ async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     bot_user = await context.bot.get_me()
     full_chat = await context.bot.get_chat(chat.id)
     bot_member = await context.bot.get_chat_member(chat.id, bot_user.id)
-    members_line = "Miembros: no disponible"
+    members_line = "Members: unavailable"
     try:
         count = await context.bot.get_chat_member_count(chat.id)
-        members_line = f"Miembros: {count}"
+        members_line = f"Members: {count}"
     except TelegramError:
         pass
     config = get_config(context)
@@ -1293,20 +1333,20 @@ async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     resolved_dir = resolve_target_dir(get_config(context), chat, chat.id, None, default_dir)
 
     lines = [
-        "Info del grupo",
-        f"Titulo: {full_chat.title or chat.title or full_chat.full_name}",
+        "Group information",
+        f"Title: {full_chat.title or chat.title or full_chat.full_name}",
         f"ID: {chat.id}",
-        f"Tipo: {chat.type}",
-        f"Username: @{full_chat.username}" if full_chat.username else "Username: sin username",
+        f"Type: {chat.type}",
+        f"Username: @{full_chat.username}" if full_chat.username else "Username: none",
         members_line,
         f"Bot: @{bot_user.username}",
-        f"Estado del bot: {bot_member.status}",
-        f"Carpeta de descarga: {resolved_dir}",
+        f"Bot status: {bot_member.status}",
+        f"Download folder: {resolved_dir}",
         "",
-        "Si no aparecen archivos nuevos, revisa Privacy Mode o hazme admin.",
+        "If new files are missing, check Privacy Mode or make the bot an admin.",
     ]
     if target.from_private:
-        lines.insert(1, "Consultado desde privado")
+        lines.insert(1, "Requested from private chat")
     await update.effective_message.reply_text("\n".join(lines))
 
 
@@ -1330,7 +1370,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             None,
             str(config.default_download_dir) if config.default_download_dir else None,
         )
-        await update.effective_message.reply_text(f"Carpeta persistente eliminada. Usare: {fallback}")
+        await update.effective_message.reply_text(f"Persistent folder cleared. Using: {fallback}")
         return
 
     if folder_arg:
@@ -1340,14 +1380,14 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.effective_message.reply_text(str(exc))
             return
         await store.set_default_download_dir(target.chat_id, str(target_dir))
-        await update.effective_message.reply_text(f"Carpeta persistente guardada:\n{target_dir}")
+        await update.effective_message.reply_text(f"Persistent folder saved:\n{target_dir}")
         return
 
     chat_default_dir = await store.get_default_download_dir(target.chat_id)
     default_dir = chat_default_dir or (str(config.default_download_dir) if config.default_download_dir else None)
     target_dir = resolve_target_dir(config, chat, target.chat_id, None, default_dir)
     source = "persistente" if chat_default_dir else "global" if config.default_download_dir else "automatica"
-    await update.effective_message.reply_text(f"Carpeta actual ({source}):\n{target_dir}")
+    await update.effective_message.reply_text(f"Current folder ({source}):\n{target_dir}")
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1376,7 +1416,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.effective_message.reply_text(str(exc))
         return
     stats, new_since_last = await create_scan_snapshot(context, target.chat_id)
-    message = await update.effective_message.reply_text(f"Preparando descarga...\nDestino: {target_dir}")
+    message = await update.effective_message.reply_text(f"Preparing download...\nDestination: {target_dir}")
     state = await download_missing_for_chat(context, target.chat_id, chat, target_dir, message)
     await get_store(context).create_scan(
         chat_id=target.chat_id,
@@ -1406,7 +1446,7 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     title = chat.title or chat.full_name or str(chat.id)
     message = await update.effective_message.reply_text(
         format_stats(title, stats, new_since_last, include_note=False)
-        + f"\n\nDescargando faltantes en: {target_dir}"
+        + f"\n\nDownloading missing files to: {target_dir}"
     )
     await download_missing_for_chat(context, target.chat_id, chat, target_dir, message)
 
@@ -1420,16 +1460,16 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     chat = target.chat
     if not context.args:
         await update.effective_message.reply_text(
-            "Uso: /programar <minutos> [descargar] [carpeta]\nEjemplo: /programar 60 descargar Musica"
+            "Usage: /schedule <minutes> [download] [folder]\nExample: /schedule 60 download Music"
         )
         return
     try:
         interval = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("El primer argumento debe ser un numero de minutos.")
+        await update.effective_message.reply_text("The first argument must be a number of minutes.")
         return
     if interval < 1:
-        await update.effective_message.reply_text("El intervalo minimo es 1 minuto.")
+        await update.effective_message.reply_text("The minimum interval is one minute.")
         return
 
     do_download = len(context.args) >= 2 and context.args[1].lower() in {"descargar", "download", "sync", "sincronizar"}
@@ -1450,10 +1490,10 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         do_download=do_download,
         target_dir=str(target_dir) if target_dir and folder_arg else None,
     )
-    action = "scan + descarga" if do_download else "scan"
-    target_text = f"\nDestino: {target_dir}" if target_dir else ""
+    action = "scan + download" if do_download else "scan"
+    target_text = f"\nDestination: {target_dir}" if target_dir else ""
     await update.effective_message.reply_text(
-        f"Programacion #{schedule_id} creada: {action} cada {interval} minutos.{target_text}"
+        f"Schedule #{schedule_id} created: {action} every {interval} minutes.{target_text}"
     )
 
 
@@ -1465,21 +1505,21 @@ async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     rows = await get_store(context).list_schedules(target.chat_id)
     if not rows:
-        await update.effective_message.reply_text("No hay programaciones activas para este grupo.")
+        await update.effective_message.reply_text("No active schedules for this group.")
         return
     config = get_config(context)
     chat_default_dir = await get_store(context).get_default_download_dir(target.chat_id)
     default_dir = chat_default_dir or (str(config.default_download_dir) if config.default_download_dir else None)
     default_target = resolve_target_dir(config, target.chat, target.chat_id, None, default_dir)
-    lines = [f"Programaciones activas para {display_chat_title(target.chat)}:"]
+    lines = [f"Active schedules for {display_chat_title(target.chat)}:"]
     for row in rows:
         next_run = datetime.fromisoformat(row["next_run_at"]).astimezone(config.app_timezone)
-        action = "scan + descarga" if row["do_download"] else "scan"
+        action = "scan + download" if row["do_download"] else "scan"
         if row["do_download"]:
-            target = f" -> {row['target_dir']}" if row["target_dir"] else f" -> carpeta persistente/default: {default_target}"
+            target = f" -> {row['target_dir']}" if row["target_dir"] else f" -> persistent/default folder: {default_target}"
         else:
             target = ""
-        lines.append(f"#{row['id']}: {action} cada {row['interval_minutes']} min, proxima {next_run:%Y-%m-%d %H:%M}{target}")
+        lines.append(f"#{row['id']}: {action} every {row['interval_minutes']} min, next {next_run:%Y-%m-%d %H:%M}{target}")
     await update.effective_message.reply_text("\n".join(lines))
 
 
@@ -1490,18 +1530,18 @@ async def cancel_schedule_command(update: Update, context: ContextTypes.DEFAULT_
     if not target:
         return
     if not context.args:
-        await update.effective_message.reply_text("Uso: /cancelar_programacion <id>")
+        await update.effective_message.reply_text("Usage: /cancel_schedule <id>")
         return
     try:
         schedule_id = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("El id debe ser numerico.")
+        await update.effective_message.reply_text("The ID must be numeric.")
         return
     disabled = await get_store(context).disable_schedule(target.chat_id, schedule_id)
     if disabled:
-        await update.effective_message.reply_text(f"Programacion #{schedule_id} cancelada.")
+        await update.effective_message.reply_text(f"Schedule #{schedule_id} canceled.")
     else:
-        await update.effective_message.reply_text(f"No encontre una programacion activa #{schedule_id} en este grupo.")
+        await update.effective_message.reply_text(f"No active schedule #{schedule_id} in this group.")
 
 
 async def run_scheduled_job(app: Application, row: sqlite3.Row) -> None:
@@ -1515,16 +1555,13 @@ async def run_scheduled_job(app: Application, row: sqlite3.Row) -> None:
         notify_chat_id = int(row["notify_chat_id"] or chat_id)
         if row["do_download"]:
             target_dir = Path(row["target_dir"]) if row["target_dir"] else await resolve_download_target(app, chat, chat_id, None)
-            message = await app.bot.send_message(
-                chat_id=notify_chat_id,
-                text=format_stats(title, stats, new_since_last, include_note=False)
-                + f"\n\nProgramacion #{row['id']}: descargando faltantes en {target_dir}",
-            )
-            await download_missing_for_chat(app, chat_id, chat, target_dir, message)
-        else:
+            state = await download_missing_for_chat(app, chat_id, chat, target_dir, None)
+            if state.done_files or state.error_files or new_since_last:
+                await app.bot.send_message(chat_id=notify_chat_id, text=progress_text(state, final=True))
+        elif new_since_last:
             await app.bot.send_message(
                 chat_id=notify_chat_id,
-                text=f"Programacion #{row['id']}\n" + format_stats(title, stats, new_since_last),
+                text=f"🎵 {title}: {new_since_last} new audio files. Total: {stats['total_count']}.",
             )
     except Exception:
         LOGGER.exception("Scheduled job %s failed", row["id"])
@@ -1546,18 +1583,21 @@ async def post_init(app: Application) -> None:
     await get_store(app).init()
     await app.bot.set_my_commands(
         [
-            BotCommand("ayuda", "Ver comandos"),
-            BotCommand("info_grupo", "Ver informacion del grupo"),
-            BotCommand("grupos", "Listar grupos conocidos"),
-            BotCommand("usar_grupo", "Elegir grupo para privado"),
-            BotCommand("scan", "Contar audios conocidos"),
-            BotCommand("carpeta", "Ver o guardar carpeta persistente"),
-            BotCommand("descargar", "Descargar faltantes"),
-            BotCommand("sincronizar", "Scan y descarga de faltantes"),
-            BotCommand("programar", "Agendar scan o descarga"),
-            BotCommand("programaciones", "Listar agendas"),
-            BotCommand("cancelar_programacion", "Cancelar agenda"),
-            BotCommand("whoami", "Ver IDs para permisos"),
+            BotCommand("help", "Show commands"),
+            BotCommand("daylist", "Download your daylist"),
+            BotCommand("spotify", "Spotify status and setup"),
+            BotCommand("skipped", "Skipped file details"),
+            BotCommand("group", "Show group information"),
+            BotCommand("groups", "List known groups"),
+            BotCommand("use_group", "Select a group for private commands"),
+            BotCommand("scan", "Count known audio files"),
+            BotCommand("folder", "Show or save the persistent folder"),
+            BotCommand("download", "Download missing files"),
+            BotCommand("sync", "Scan and download missing files"),
+            BotCommand("schedule", "Schedule scans or downloads"),
+            BotCommand("schedules", "List schedules"),
+            BotCommand("cancel_schedule", "Cancel a schedule"),
+            BotCommand("whoami", "Show IDs for permissions"),
         ]
     )
     app.bot_data["scheduler_task"] = asyncio.create_task(scheduler_loop(app), name="scheduler_loop")
@@ -1590,17 +1630,22 @@ def build_application(config: Config) -> Application:
     app.bot_data["config"] = config
     app.bot_data["store"] = store
     app.add_handler(CommandHandler(["start", "ayuda", "help"], help_command), group=0)
+    from .music import daylist_command, spotify_command, music_link_message
+    app.add_handler(CommandHandler("daylist", daylist_command), group=0)
+    app.add_handler(CommandHandler("spotify", spotify_command), group=0)
+    app.add_handler(CommandHandler(["skipped", "omitidos"], omitted_command), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, music_link_message), group=0)
     app.add_handler(CommandHandler("whoami", whoami_command), group=0)
-    app.add_handler(CommandHandler("grupos", groups_command), group=0)
-    app.add_handler(CommandHandler("usar_grupo", use_group_command), group=0)
-    app.add_handler(CommandHandler("info_grupo", group_info_command), group=0)
+    app.add_handler(CommandHandler(["groups", "grupos"], groups_command), group=0)
+    app.add_handler(CommandHandler(["use_group", "usar_grupo"], use_group_command), group=0)
+    app.add_handler(CommandHandler(["group", "info_grupo"], group_info_command), group=0)
     app.add_handler(CommandHandler(["scan", "resumen"], scan_command), group=0)
-    app.add_handler(CommandHandler(["carpeta", "setcarpeta"], folder_command), group=0)
-    app.add_handler(CommandHandler("descargar", download_command), group=0)
-    app.add_handler(CommandHandler(["sincronizar", "sync"], sync_command), group=0)
-    app.add_handler(CommandHandler("programar", schedule_command), group=0)
-    app.add_handler(CommandHandler("programaciones", schedules_command), group=0)
-    app.add_handler(CommandHandler("cancelar_programacion", cancel_schedule_command), group=0)
+    app.add_handler(CommandHandler(["folder", "carpeta", "setcarpeta"], folder_command), group=0)
+    app.add_handler(CommandHandler(["download", "descargar"], download_command), group=0)
+    app.add_handler(CommandHandler(["sync", "sincronizar"], sync_command), group=0)
+    app.add_handler(CommandHandler(["schedule", "programar"], schedule_command), group=0)
+    app.add_handler(CommandHandler(["schedules", "programaciones"], schedules_command), group=0)
+    app.add_handler(CommandHandler(["cancel_schedule", "cancelar_programacion"], cancel_schedule_command), group=0)
     app.add_handler(ChatMemberHandler(observe_chat_member, ChatMemberHandler.MY_CHAT_MEMBER), group=1)
     app.add_handler(MessageHandler(~filters.COMMAND, observe_message), group=1)
     return app

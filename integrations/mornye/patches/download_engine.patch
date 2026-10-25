@@ -1,0 +1,63 @@
+--- a/mornye/application/download_engine.py
++++ b/mornye/application/download_engine.py
+@@ -831,6 +831,8 @@
+     metadata: TrackMetadata,
+     opts: DownloadOptions,
+     is_album: bool,
++    *,
++    force: bool = False,
+ ) -> None:
+     """Ensure provider-produced files carry the requested metadata.
+ 
+@@ -840,7 +842,7 @@
+     only, so the host must tag their result before post-processing/transcoding.
+     """
+     if (
+-        getattr(provider, "handles_metadata_injection", False)
++        (getattr(provider, "handles_metadata_injection", False) and not force)
+         or result.skipped
+         or not result.file_path
+     ):
+@@ -1171,6 +1173,16 @@
+                     provider.name, str(exc) or type(exc).__name__
+                 )
+ 
++            # A prior run can stop after the source download and before
++            # conversion. Reuse that source, but still check identity, tag
++            # and transcode it instead of declaring an MP3 already present.
++            resumed_source = False
++            if (result.success and result.skipped and opts.transcode_to
++                    and result.file_path
++                    and Path(result.file_path).suffix.lower() != extension_for(opts.transcode_to)):
++                result.skipped = False
++                resumed_source = True
++
+             if result.success and not result.skipped:
+                 result = await _reject_wrong_recording_async(
+                     metadata,
+@@ -1186,6 +1198,7 @@
+                     metadata,
+                     opts,
+                     is_album,
++                    force=resumed_source,
+                 )
+ 
+             if result.success and not result.skipped:
+@@ -2239,6 +2252,17 @@
+         opts: DownloadOptions,
+     ) -> dict[str, Path]:
+         """Downloads the tracks not already on disk. Returns key → file path."""
++        # CSV/playlist synchronization bypasses the worker for existing
++        # files. Still emit their outcomes so JSON reports and M3U rebuilds
++        # preserve every already-downloaded track on repeat runs.
++        hooks = load_hooks(getattr(opts, "post_download_hooks", None))
++        for planned in plan.present:
++            if planned.existing_path is not None and hooks:
++                existing = DownloadResult.skipped_result(
++                    "existing", str(planned.existing_path),
++                    fmt=result_format_for(opts.transcode_to) or planned.existing_path.suffix.lstrip("."),
++                )
++                await run_hooks(hooks, existing, planned.track)
+         pending = plan.pending
+         if not pending:
+             logger.info("[playlists] Every track is already in the output directory")

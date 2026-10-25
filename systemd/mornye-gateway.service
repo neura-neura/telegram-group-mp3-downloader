@@ -1,0 +1,21 @@
+[Unit]
+Description=Mornye shared browser gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=musicbot
+Group=musicbot
+WorkingDirectory=/opt/telegram-group-mp3-downloader
+EnvironmentFile=/opt/telegram-group-mp3-downloader/.env
+Environment=MORNYE_BROWSER_SOCKET=/opt/telegram-group-mp3-downloader/runtime/mornye/state/gateway.sock
+Environment=MORNYE_DATA_DIR=/opt/telegram-group-mp3-downloader/runtime/mornye/mornye-data
+Environment=TS_DEBUG_VISIBLE=1
+ExecStart=/opt/telegram-group-mp3-downloader/runtime/mornye/.venv/bin/python -m mornye.core.server_browser_network
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

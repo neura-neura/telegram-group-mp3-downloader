@@ -12,3 +12,26 @@ downloads/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Private runtime, provider sessions, OAuth tokens, logs, and media
+.env.*
+!.env.example
+runtime/
+state/
+mornye-data/
+logs/
+*.log
+*.session
+*.session-journal
+*.pem
+*.key
+*.mp3
+*.m4a
+*.flac
+*.wav
+*.m3u
+*.m3u8
+spotify_token*
+settings.json
+worker.lock
+.DS_Store
