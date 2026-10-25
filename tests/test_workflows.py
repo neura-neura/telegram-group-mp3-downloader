@@ -121,6 +121,37 @@ class MusicTests(unittest.TestCase):
                 worker.run({'action':'url', 'url':url})
                 self.assertEqual(len(calls), count+1)
 
+    def test_one_track_album_and_song_share_one_static_playlist(self):
+        import hashlib
+        snapshots = {}
+        song_url = 'https://open.spotify.com/track/example'
+        album_url = 'https://open.spotify.com/album/example'
+        for category, url in [('Albums', album_url), ('Singles', song_url)]:
+            folder = worker.MUSIC/'Spotify'/category
+            folder.mkdir(parents=True)
+            audio = folder/'Track.mp3'
+            shutil.copy2(self.source, audio)
+            row = {'id':'track-id', 'title':'Track', 'artists':'Artist', 'album':'Album', 'status':'downloaded', 'file_path':str(audio)}
+            job = hashlib.sha256(url.encode()).hexdigest()[:12]
+            worker.save(folder/f'report-{job}.json', {'summary':{'total':1, 'failed':0}, 'tracks':[row]})
+            playlist = worker.playlist_path(folder, False, category, category, [row], job)
+            playlist.write_text('#EXTM3U\nTrack.mp3\n')
+            snapshots[category] = (audio, playlist, audio.read_bytes())
+        with patch.object(worker, 'run_cli', side_effect=AssertionError('Completed audio reached downloader')):
+            result = worker.run({'action':'url', 'url':song_url})
+            repeated = worker.run({'action':'url', 'url':song_url})
+        canonical = snapshots['Albums'][1]
+        self.assertEqual((worker.MUSIC/result['folder']/result['m3u']).resolve(), canonical)
+        self.assertEqual(result['m3u'], repeated['m3u'])
+        self.assertTrue(canonical.exists())
+        self.assertFalse(snapshots['Singles'][1].exists())
+        for audio, playlist, before in snapshots.values():
+            self.assertEqual(audio.read_bytes(), before)
+        other = {'id':'other-recording', 'title':'Track', 'artists':'Artist', 'album':'Album', 'status':'downloaded'}
+        self.assertIsNone(worker.equivalent_single_track_playlist('Singles', [other]))
+        self.assertIsNone(worker.equivalent_single_track_playlist('Albums', [other, other]))
+        self.assertIsNone(worker.equivalent_single_track_playlist('Playlists', [other]))
+
     def test_failed_job_cleans_its_flac_only(self):
         folder = worker.MUSIC/'Spotify/Albums'
         folder.mkdir(parents=True)

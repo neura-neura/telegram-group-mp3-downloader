@@ -119,3 +119,5 @@ The reviewable diffs in `integrations/mornye/patches/` cover:
 4. A shared browser transport and cancellation of abandoned gateway requests.
 
 The gateway checks provider origins and uses a private local socket. It does not disable TLS checks or recording-identity validation. There is no guarantee against account suspension, provider restrictions, or changes in service behavior. Keep your Spotify authorization private and review the extensions you install.
+
+A single-track album and its individual song share one static M3U when the exact track ID and recording metadata match. The first valid export is retained; existing duplicate song/album exports are consolidated without moving or deleting audio. Daylist captures and user playlists remain separate.

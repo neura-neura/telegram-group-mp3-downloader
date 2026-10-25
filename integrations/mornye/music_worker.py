@@ -108,6 +108,43 @@ def playlist_path(folder, daylist, name, category, entries, job_id, captured=Non
         suffix += 1
     return result
 
+def equivalent_single_track_playlist(category, entries):
+    # A one-track release and its song should expose only one static playlist.
+    # Daylists, user playlists, and multi-track releases keep separate exports.
+    if category not in {'Albums', 'Singles'} or len(entries) != 1:
+        return None
+    current = entries[0]
+    if current.get('status') not in {'downloaded', 'skipped'} or not current.get('id'):
+        return None
+    def identity(row):
+        return tuple(str(row.get(key) or '').strip().casefold()
+                     for key in ('id', 'title', 'artists', 'album', 'isrc'))
+    root = MUSIC / 'Spotify'
+    for kind in ('Albums', 'Singles'):
+        folder = root / kind
+        for report_path in sorted(folder.glob('report-*.json')):
+            try:
+                report = json.loads(report_path.read_text())
+                rows = report['tracks']
+                if (len(rows) != 1 or report.get('summary', {}).get('failed', 0)
+                        or rows[0].get('status') not in {'downloaded', 'skipped'}
+                        or identity(rows[0]) != identity(current)):
+                    continue
+                audio = Path(rows[0].get('file_path') or '')
+                if not audio.resolve().is_relative_to(root.resolve()) or not valid_mp3(audio):
+                    continue
+                job = report_path.stem.removeprefix('report-')
+                for playlist in sorted(folder.glob('*.m3u')):
+                    if not playlist.stem.endswith(' [' + job + ']'):
+                        continue
+                    paths = [line for line in playlist.read_text(encoding='utf-8').splitlines()
+                             if line and not line.startswith('#')]
+                    if len(paths) == 1 and (playlist.parent / paths[0]).resolve() == audio.resolve():
+                        return playlist
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+    return None
+
 def cleanup_flacs(folder, before):
     # Only this run's intermediates or a verified MP3's leftover source.
     for path in folder.rglob('*'):
@@ -470,6 +507,10 @@ def run(request):
     else:
         ordered = entries
     m3u = playlist_path(folder, daylist, name, category, entries, job_id, date if daylist else None)
+    own_m3u = m3u
+    equivalent = equivalent_single_track_playlist(category, ordered) if not daylist and (not order_ids or len(ordered) == len(order_ids)) else None
+    if equivalent is not None:
+        m3u = equivalent
     lines = ['#EXTM3U']
     for entry in ordered:
         if entry.get('status') not in {'downloaded', 'skipped'} or not entry.get('file_path'):
@@ -481,7 +522,13 @@ def run(request):
         label = (str(entry.get('artists', '')) + ' - ' + str(entry.get('title', audio_path.stem))).replace('\n', ' ').replace('\r', ' ')
         duration = int(entry.get('duration_ms', 0) or 0) // 1000
         lines.extend([f'#EXTINF:{duration},{label}', os.path.relpath(audio_path, m3u.parent)])
-    if len(lines) > 1:
+    if equivalent is not None:
+        # Preserve the canonical export's paths and the existing audio locations.
+        if own_m3u != m3u and own_m3u.exists():
+            paths = [line for line in own_m3u.read_text(encoding='utf-8').splitlines() if line and not line.startswith('#')]
+            if len(paths) == 1 and (own_m3u.parent / paths[0]).resolve() == Path(ordered[0]['file_path']).resolve():
+                own_m3u.unlink()
+    elif len(lines) > 1:
         temp_m3u = m3u.with_suffix('.tmp')
         temp_m3u.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         temp_m3u.replace(m3u)
@@ -496,7 +543,7 @@ def run(request):
         name = m3u.stem
     already_downloaded = summary.get('skipped') == summary.get('total')
     return {'summary': summary, 'already_downloaded': already_downloaded, 'name': name, 'folder': str(folder.relative_to(MUSIC)),
-        'm3u': m3u.name if m3u.exists() else None,
+        'm3u': os.path.relpath(m3u, folder) if m3u.exists() else None,
         'notice': 'Mornye providers returned no audio. No empty M3U was created. Check /spotify or retry later.' if summary.get('failed') == summary.get('total') else None}
 
 if __name__ == '__main__':

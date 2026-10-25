@@ -15,6 +15,8 @@
 
 ### Changed
 
+- Equivalent song and single-track album exports share one validated static M3U, without modifying audio or daylist captures.
+
 - Scheduled Telegram jobs stay quiet when there are no changes.
 - Final summaries are compact; skipped-file details are available on request.
 - Telegram downloads use dated folders and maintain an `All Tracks.m3u` with relative paths.

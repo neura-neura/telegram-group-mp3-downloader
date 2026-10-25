@@ -134,3 +134,5 @@ Offline tests use generated audio and mocked services. No account credentials ar
 ```
 
 The bundled Mornye compatibility patches target version 1.0.4. Do not replace that environment with a newer release without reviewing the patches. Upstream Mornye code is MIT-licensed; its notice is included in [LICENSE-Mornye](integrations/mornye/LICENSE-Mornye).
+
+A single-track album and its individual song share one static M3U when the exact track ID and recording metadata match. The first valid export is retained; existing duplicate song/album exports are consolidated without moving or deleting audio. Daylist captures and user playlists remain separate.
