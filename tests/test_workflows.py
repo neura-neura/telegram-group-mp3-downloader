@@ -20,6 +20,12 @@ spec.loader.exec_module(worker)
 
 
 class TelegramTests(unittest.IsolatedAsyncioTestCase):
+    async def test_music_progress_shows_counts_in_one_message(self):
+        rendered = music.progress_text({'stage':'Downloading','total':10,'downloaded':3,'skipped':2}, 65)
+        self.assertIn('5/10', rendered)
+        self.assertIn('50%', rendered)
+        self.assertIn('1:05', rendered)
+
     async def test_quiet_schedule_and_compact_summary(self):
         state = bot.DownloadState(1200, 0, Path('/music/Telegram'), existing_files=1200)
         self.assertIn('Up to date', bot.progress_text(state, final=True))
@@ -84,7 +90,7 @@ class MusicTests(unittest.TestCase):
         shutil.copy2(self.source, original)
         row = {'id':'track-id', 'title':'Track', 'artists':'Artist', 'album':'Album', 'status':'downloaded', 'file_path':str(original)}
         worker.save(old/'report-original.json', {'tracks':[row]})
-        with patch.object(worker, 'snapshot', return_value=({'name':'New daylist', 'snapshot_id':'new'}, [self.song])), patch.object(worker, 'prepare_sources', side_effect=AssertionError('Provider called for existing audio')), patch.object(worker, 'run_cli', side_effect=AssertionError('Downloader called for existing audio')):
+        with patch.object(worker, 'discover_daylist', return_value={'url':'https://open.spotify.com/playlist/example','track_ids':[self.song['id']]}), patch.object(worker, 'snapshot', return_value=({'name':'New daylist', 'snapshot_id':'new'}, [self.song])), patch.object(worker, 'prepare_sources', side_effect=AssertionError('Provider called for existing audio')), patch.object(worker, 'run_cli', side_effect=AssertionError('Downloader called for existing audio')):
             first = worker.run({'action':'daylist', 'url':'https://open.spotify.com/playlist/example'})
             second = worker.run({'action':'daylist'})
         self.assertTrue(first['already_downloaded'])
@@ -170,32 +176,37 @@ class MusicTests(unittest.TestCase):
         worker.validate_daylist_capture('https://open.spotify.com/playlist/owned', stale, {}, False, now)
         worker.validate_daylist_capture(new_url, {**stale, 'access_method':'spotify_oauth'}, {}, False, now)
         worker.STATE.joinpath('settings.json').write_text(json.dumps({'daylist_url':old_url, 'daylist_url_selected_date':'2026-10-25'}))
-        with patch.object(worker, 'snapshot', return_value=(stale, [self.song])), patch.object(worker, 'prepare_sources', side_effect=AssertionError('Stale snapshot reached providers')):
+        with patch.object(worker, 'discover_daylist', return_value={'url':old_url,'track_ids':[self.song['id']]}), patch.object(worker, 'snapshot', return_value=(stale, [self.song])), patch.object(worker, 'prepare_sources', side_effect=AssertionError('Stale snapshot reached providers')):
             with self.assertRaises(ValueError):
                 worker.run({'action':'daylist'})
         self.assertFalse(list(worker.MUSIC.rglob('*.m3u')))
         self.assertFalse(list(worker.MUSIC.rglob('snapshot.json')))
         self.assertEqual(json.loads((worker.STATE/'settings.json').read_text())['daylist_url'], old_url)
 
-    def test_daylist_prefers_account_metadata_before_shared_fallback(self):
-        import httpx
+    def test_daylist_metadata_only_uses_mornye(self):
         worker.STATE.joinpath('spotify_token.json').write_text('{}')
         url = 'https://open.spotify.com/playlist/example'
-        info = {'name':'Current account playlist', 'tracks':{'items':[{'track':{**self.song, 'type':'track'}}]}}
-        response = httpx.Response(200, json=info, request=httpx.Request('GET', 'https://api.spotify.com/v1/playlists/example'))
-        client = SimpleNamespace(get=lambda *args, **kwargs:response)
-        from unittest.mock import MagicMock
-        manager = MagicMock()
-        manager.__enter__.return_value = client
-        with patch.object(worker, 'token', return_value='TEST_TOKEN'), patch.object(worker.httpx, 'Client', return_value=manager), patch.object(worker, 'public_snapshot', side_effect=AssertionError('Shared data used before account')):
-            result, songs = worker.snapshot(url, prefer_account=True)
-        self.assertEqual(result['access_method'], 'spotify_oauth')
-        self.assertEqual(songs[0]['id'], self.song['id'])
-        response = httpx.Response(404, json={'error':{'status':404}}, request=httpx.Request('GET', 'https://api.spotify.com/v1/playlists/example'))
-        with patch.object(worker, 'token', return_value='TEST_TOKEN'), patch.object(worker.httpx, 'Client', return_value=manager), patch.object(worker, 'public_snapshot', return_value=({'name':'Shared fallback'}, [self.song])) as shared:
-            result, songs = worker.snapshot(url, prefer_account=True)
+        with patch.object(worker, 'token', side_effect=AssertionError('Account API called')), patch.object(worker, 'public_snapshot', return_value=({'name':'Mornye playlist'}, [self.song])) as shared:
+            result, songs = worker.snapshot(url)
             shared.assert_called_once_with(url)
-        self.assertEqual(result['name'], 'Shared fallback')
+        self.assertEqual(result['name'], 'Mornye playlist')
+        with patch.object(worker, 'token', side_effect=AssertionError('Account fallback called')), patch.object(worker, 'public_snapshot', side_effect=ValueError('Mornye unavailable')):
+            with self.assertRaisesRegex(ValueError, 'Mornye unavailable'):
+                worker.snapshot(url)
+
+    def test_automatic_discovery_never_falls_back_to_saved_url(self):
+        old_url = 'https://open.spotify.com/playlist/old'
+        worker.STATE.joinpath('settings.json').write_text(json.dumps({'daylist_url':old_url}))
+        with patch.object(worker, 'discover_daylist', side_effect=ValueError('Login required')), patch.object(worker, 'snapshot', side_effect=AssertionError('Saved URL reused')):
+            with self.assertRaisesRegex(ValueError, 'Login required'):
+                worker.run({'action':'daylist'})
+        self.assertEqual(json.loads((worker.STATE/'settings.json').read_text())['daylist_url'], old_url)
+
+    def test_current_browser_fingerprint_must_match_mornye(self):
+        with patch.object(worker, 'discover_daylist', return_value={'url':'https://open.spotify.com/playlist/new','track_ids':['new-track']}), patch.object(worker, 'snapshot', return_value=({'name':'Old capture'}, [self.song])):
+            with self.assertRaisesRegex(ValueError, 'different capture'):
+                worker.run({'action':'daylist'})
+        self.assertFalse(list(worker.MUSIC.rglob('snapshot.json')))
 
     def test_failed_job_cleans_its_flac_only(self):
         folder = worker.MUSIC/'Spotify/Albums'

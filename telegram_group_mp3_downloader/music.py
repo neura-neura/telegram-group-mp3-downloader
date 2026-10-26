@@ -34,16 +34,11 @@ async def spotify_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     from .bot import guard
     if not await music_guard(update, context):
         return
-    connected = (ROOT / 'state/spotify_token.json').exists()
     await update.effective_message.reply_text(
-        'Spotify: ' + ('connected ✅' if connected else 'not connected') + '\n'
-        '/daylist captures the current daylist with a date and an M3U playlist.\n'
-        '/daylist <daylist URL> saves its URL (private chat only).\n'
-        'Shared personalized daylist URLs can change at each update. Send the current URL after Spotify changes it.\n'
-        'To connect Spotify from your computer:\n'
-        'ssh -L 8765:127.0.0.1:8765 USER@YOUR_SERVER\n'
-        'Then follow docs/mornye.md to run spotify_login.py with your Client ID.\n'
-        'Register http://127.0.0.1:8765/callback as the Redirect URI in Spotify for Developers. '
+        '/daylist locates your current personalized daylist automatically.\n'
+        'Mornye reads its songs and downloads the audio. A dedicated Spotify web session is used only to find the current share link.\n'
+        'Sign in once in that server browser; see docs/mornye.md. If the session expires, sign in again.\n'
+        '/daylist <playlist URL> captures that specific link for this request.\n'
         'Do not send passwords or cookies to the bot.')
 
 def progress_text(state, elapsed):

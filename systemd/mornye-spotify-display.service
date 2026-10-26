@@ -1,0 +1,12 @@
+[Unit]
+Description=Private display for Spotify daylist discovery
+
+[Service]
+User=musicbot
+Group=musicbot
+ExecStart=/usr/bin/Xvfb :100 -screen 0 1280x900x24 -nolisten tcp
+Restart=on-failure
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

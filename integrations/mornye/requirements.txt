@@ -1,2 +1,5 @@
 # Separate environment: the Telegram bot keeps its lighter dependency set.
 mornye @ git+https://github.com/mornyeapp/Mornye-Python.git@v1.0.4
+
+# Loopback CDP discovery for the personalized current-daylist link.
+websockets>=14,<17

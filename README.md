@@ -54,7 +54,7 @@ Mornye is disabled by default and uses a separate environment. Follow **[Mornye 
 | `/schedules`, `/cancel_schedule <id>` | List or cancel persistent schedules. |
 | `/skipped` | Download a detailed skipped-file report on request. |
 | `/spotify` | Show Spotify connection status and setup guidance. |
-| `/daylist [Spotify playlist URL]` | Capture the current daylist; save a new URL in private chat. |
+| `/daylist [Spotify playlist URL]` | Find the current daylist automatically; an explicit URL captures that link only. |
 | A supported music URL | Start a Mornye download for the configured owner. |
 
 Existing Spanish command aliases remain supported. Bot responses and the published command menu are in English.
@@ -91,7 +91,7 @@ Each valid `/daylist` request creates a new playlist file even if the snapshot a
 
 Music jobs edit one Telegram message approximately every three seconds, then replace it with the final summary. While a job runs, the same request points you back to its progress; another request asks you to wait and resend it afterward. There is no background queue. A process-level lock also prevents a terminal job from racing a bot job.
 
-Completed requests are skipped only after their MP3 files pass format and core-tag checks. Missing files, changed collections, and incomplete reports allow another attempt. Daylists are always read again. Shared personalized URLs can identify a frozen capture instead of the current daylist; send the new URL after Spotify updates it. The bot rejects a saved shared capture from a different day rather than relabeling it as current. Daylist deduplication uses exact Spotify track IDs from previous successful reports, not titles alone.
+Completed requests are skipped only after their MP3 files pass format and core-tag checks. Missing files, changed collections, and incomplete reports allow another attempt. Daylists are always read again. A dedicated signed-in Spotify browser resolves the current daylist share URL on every plain `/daylist` request. Mornye reads the metadata and downloads audio; the official account API is not used. Discovery failures never fall back to yesterday's URL. Set up the browser session once using the integration guide. Daylist deduplication uses exact Spotify track IDs from previous successful reports, not titles alone.
 
 ## Configuration
 
@@ -120,7 +120,7 @@ A bot cannot read an entire group's historical chat log. It catalogs updates it 
 ## Services, maintenance, and development
 
 - [Deployment and troubleshooting](docs/deployment.md)
-- [Mornye integration, registries, and OAuth](docs/mornye.md)
+- [Mornye integration, registries, and automatic daylist discovery](docs/mornye.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security and private data](SECURITY.md)

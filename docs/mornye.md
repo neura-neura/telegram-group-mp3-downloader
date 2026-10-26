@@ -1,6 +1,6 @@
 # Mornye integration
 
-The Telegram bot launches a separate CLI worker. Playlist metadata and audio downloads go through Mornye and its configured extensions; a saved Spotify OAuth token is used only as a fallback for playlist metadata. It is not passed to the audio CLI or provider gateway.
+The Telegram bot launches a separate CLI worker. Playlist metadata and audio downloads go through Mornye and its configured extensions; the dedicated Spotify web session is used only to discover the current personalized daylist share link. Browser cookies and account tokens are never passed to Mornye or its audio providers. The official account API is not used for daylist metadata.
 
 ## Requirements
 
@@ -74,32 +74,23 @@ runtime/mornye/.venv/bin/python integrations/mornye/mornye_verify.py amazon
 
 The verification helper loads `.env`. Respect any reported backoff interval. Providers can require interactive verification or refuse requests; the integration reports pending verification instead of guaranteeing access.
 
-## Connect Spotify with PKCE
+## Automatically find the current daylist
 
-In Spotify for Developers, create your own app and enable the Web API. For example:
+A shared daylist URL can refer to a particular capture. Reusing yesterday's URL does not reliably select the current list. `/daylist` therefore opens Spotify's fixed daylist entry in a dedicated browser, uses **Share → Copy playlist link** to resolve the current personalized URL, and passes that public link to Mornye. It compares visible Spotify track IDs with Mornye's result before downloading. It never falls back to the saved URL when discovery fails.
 
-- App name: `My Music Library Bot`
-- Description: `Read my playlists for my private music library.`
-- Website: optional.
-- Redirect URI: **`http://127.0.0.1:8765/callback`**
+Install Chromium/Chrome and Xvfb. Adapt and enable `systemd/mornye-spotify-display.service` and `systemd/mornye-spotify-browser.service` for your service user, executable path, and runtime directory. Create `runtime/mornye/state/spotify-browser` with mode `0700`. Keep the browser CDP endpoint bound to loopback. `MORNYE_SPOTIFY_BROWSER_URL` defaults to `http://127.0.0.1:9223`.
 
-Use your app's Client ID. No client secret, password, or Spotify cookies are required.
+Sign in once in this dedicated server browser using a secured remote desktop over an SSH tunnel. The browser uses display `:100`. Any VNC listener must bind to loopback and require authentication; never expose VNC or CDP to the internet. Enter your password and any verification codes directly into Spotify, never into Telegram, an environment file, or this repository. The browser profile contains the session and must remain private. After discovery, the tab returns to a blank page to reduce idle memory use.
 
-From your computer, open an SSH tunnel to your server:
+Run a discovery check from the repository root:
 
 ```bash
-ssh -L 8765:127.0.0.1:8765 USER@YOUR_SERVER
+runtime/mornye/.venv/bin/python integrations/mornye/daylist_discovery.py
 ```
 
-In that server session, from the repository root:
+Then send `/daylist` in Telegram. Every request resolves the current URL again and creates a dated M3U. No Client ID or official Spotify API authorization is needed for this flow. If Spotify expires the browser session, sign in again; the bot reports the problem rather than relabeling a stale capture. `/daylist <playlist URL>` remains an explicit capture of that specific URL for that request, and does not disable automatic discovery on the next plain `/daylist`.
 
-```bash
-runtime/mornye/.venv/bin/python integrations/mornye/spotify_login.py YOUR_CLIENT_ID
-```
-
-Open the printed authorization URL in the browser on the computer running the tunnel. Spotify redirects to the loopback callback. The helper validates OAuth state, exchanges the code using PKCE, and stores the token with file mode `0600` in a `0700` state directory. It expires the login attempt after ten minutes.
-
-In a private Telegram chat, send `/daylist <your full Spotify daylist URL>`. Future `/daylist` commands first try your account-authorized API, then read the saved shared URL if necessary. A personalized shared URL can stay frozen while the daylist in your account moves to a different ID. Send `/daylist <current URL>` after Spotify updates it. The bot does not claim that a saved public URL automatically discovers your current personalized daylist. It rejects a shared capture with a different weekday, or a saved URL not selected on the current date. API-authorized playlist results and owned playlist copies are not subject to that shared-capture check. If Spotify restricts its personalized shared view, save a copy as a playlist you own and send that URL instead.
+The older `spotify_login.py` PKCE helper remains available for independent API experiments. Its token is not used by the daylist path. Spotify page changes, provider availability, and account restrictions can still require maintenance; this integration does not guarantee account safety or uninterrupted service.
 
 ## Files and playlists
 

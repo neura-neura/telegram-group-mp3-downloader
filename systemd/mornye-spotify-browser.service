@@ -1,0 +1,19 @@
+[Unit]
+Description=Spotify browser for current-daylist link discovery
+Wants=network-online.target
+Requires=mornye-spotify-display.service
+After=network-online.target mornye-spotify-display.service
+
+[Service]
+User=musicbot
+Group=musicbot
+WorkingDirectory=/opt/telegram-group-mp3-downloader
+Environment=DISPLAY=:100
+# Replace this executable path with the server's installed Chrome/Chromium path.
+ExecStart=/usr/bin/chromium --disable-dev-shm-usage --disable-gpu --no-first-run --password-store=basic --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --user-data-dir=/opt/telegram-group-mp3-downloader/runtime/mornye/state/spotify-browser https://open.spotify.com/playlist/37i9dQZF1EP6YuccBxUcC1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

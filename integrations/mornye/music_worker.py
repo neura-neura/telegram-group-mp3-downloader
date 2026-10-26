@@ -219,7 +219,7 @@ def public_snapshot(url):
     try:
         info, tracks = asyncio.run(fetch())
     except Exception:
-        raise ValueError('Could not read the daylist through the API or shared URL. Save a copy as your own playlist, then send /daylist <copy URL>.')
+        raise ValueError('Mornye could not read the current daylist share link. Retry when its metadata extension is available.')
     if not tracks:
         raise ValueError('The shared daylist returned no tracks. Save a copy as your own playlist.')
     songs = [{'id': track.id, 'type': 'track', 'name': track.title,
@@ -230,39 +230,24 @@ def public_snapshot(url):
     info['access_method'] = 'shared_link'
     return info, songs
 
-def snapshot(url, prefer_account=False):
-    playlist_id = spotify_playlist(url)
-    if not prefer_account or not (STATE / 'spotify_token.json').exists():
-        try:
-            return public_snapshot(url)
-        except ValueError:
-            pass
-    with httpx.Client(headers={'Authorization': 'Bearer ' + token(), 'Cache-Control': 'no-cache'}, timeout=45) as client:
-        response = client.get('https://api.spotify.com/v1/playlists/' + playlist_id)
-        if response.status_code in (403, 404):
-            return public_snapshot(url)
-        response.raise_for_status()
-        info = response.json()
-        info['access_method'] = 'spotify_oauth'
-        tracks = info.get('tracks') or info.get('items')
-        if not isinstance(tracks, dict):
-            response = client.get(f'https://api.spotify.com/v1/playlists/{playlist_id}/items')
-            response.raise_for_status()
-            tracks = response.json()
-        items = list(tracks.get('items', []))
-        while tracks.get('next'):
-            next_url = tracks['next']
-            if urlparse(next_url).hostname != 'api.spotify.com':
-                raise ValueError('Spotify returned an unexpected pagination URL.')
-            response = client.get(next_url)
-            response.raise_for_status()
-            tracks = response.json()
-            items.extend(tracks.get('items', []))
-        songs = [row.get('track') or row.get('item') for row in items]
-        songs = [song for song in songs if song and song.get('type') == 'track' and song.get('id')]
-        if not songs:
-            raise ValueError('This playlist has no tracks accessible to your account.')
-        return info, songs
+def snapshot(url):
+    # Metadata stays on Mornye's extension path; no account-API priority/fallback.
+    spotify_playlist(url)
+    return public_snapshot(url)
+
+
+def discover_daylist():
+    result = subprocess.run([sys.executable, str(Path(__file__).with_name('daylist_discovery.py'))],
+                            capture_output=True, text=True, timeout=110)
+    try:
+        data = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise ValueError('The daylist browser could not resolve the current playlist.') from None
+    if result.returncode or data.get('error'):
+        raise ValueError(data.get('error') or 'Current daylist discovery failed.')
+    spotify_playlist(data.get('url', ''))
+    return data
+
 
 def validate_daylist_capture(url, info, settings, explicit_url, now):
     """Shared personalized URLs can stay frozen even as the account's daylist changes."""
@@ -278,10 +263,10 @@ def validate_daylist_capture(url, info, settings, explicit_url, now):
     words = re.findall(r'[^\W\d_]+', str(info.get('name', '')).casefold())
     named_days = {weekdays[word] for word in words if word in weekdays}
     if named_days and now.weekday() not in named_days:
-        raise ValueError('The saved shared daylist belongs to another day. Spotify may give each update a new URL. Send /daylist <current URL> from Spotify. Your Spotify API authorization cannot resolve this personalized daylist automatically.')
+        raise ValueError('This shared daylist belongs to another day. Check the dedicated Spotify browser session and configured timezone, then retry /daylist.')
     selected_date = settings.get('daylist_url_selected_date')
     if not explicit_url and (not selected_date or selected_date != now.date().isoformat()):
-        raise ValueError('The saved shared daylist belongs to another day. Spotify may give each update a new URL. Send /daylist <current URL> from Spotify. Your Spotify API authorization cannot resolve this personalized daylist automatically.')
+        raise ValueError('This shared daylist belongs to another day. Check the dedicated Spotify browser session and configured timezone, then retry /daylist.')
 
 
 def canonical_url(url):
@@ -394,16 +379,22 @@ def run(request):
     category = None
     services = ['ext:tidal-web', 'ext:qobuz-web', 'ext:deezer', 'ext:amazon']
     if daylist:
-        url = request.get('url') or settings.get('daylist_url')
+        discovered = None
+        url = request.get('url')
         if not url:
-            raise ValueError('First send /daylist followed by your Spotify daylist URL. Use /spotify to connect your account.')
+            progress('Locating your current daylist')
+            discovered = discover_daylist()
+            url = discovered['url']
         spotify_playlist(url)
-        info, songs = snapshot(url, prefer_account=True)
+        info, songs = snapshot(url)
+        if discovered:
+            visible_ids = set(discovered.get('track_ids') or [])
+            if not visible_ids or not visible_ids.issubset({song['id'] for song in songs}):
+                raise ValueError('Mornye returned a different capture from the current Spotify daylist. Retry; no stale playlist was downloaded.')
         date = datetime.now(ZoneInfo(os.getenv('APP_TIMEZONE', 'UTC')))
-        validate_daylist_capture(url, info, settings, bool(request.get('url')), date)
+        validate_daylist_capture(url, info, settings, True, date)
         settings['daylist_url'] = url
-        if request.get('url'):
-            settings['daylist_url_selected_date'] = date.date().isoformat()
+        settings['daylist_url_selected_date'] = date.date().isoformat()
         save(settings_path, settings)
         name = safe(info['name'])
         # Snapshot id keeps retries in the same directory and distinguishes daylist refreshes.
