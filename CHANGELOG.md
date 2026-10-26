@@ -15,6 +15,8 @@
 
 ### Changed
 
+- Daylist requests prefer account-authorized metadata and reject shared captures from another day; updated shared URLs are saved only after validation.
+
 - Equivalent song and single-track album exports share one validated static M3U, without modifying audio or daylist captures.
 
 - Scheduled Telegram jobs stay quiet when there are no changes.

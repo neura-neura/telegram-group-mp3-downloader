@@ -39,6 +39,7 @@ async def spotify_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         'Spotify: ' + ('connected ✅' if connected else 'not connected') + '\n'
         '/daylist captures the current daylist with a date and an M3U playlist.\n'
         '/daylist <daylist URL> saves its URL (private chat only).\n'
+        'Shared personalized daylist URLs can change at each update. Send the current URL after Spotify changes it.\n'
         'To connect Spotify from your computer:\n'
         'ssh -L 8765:127.0.0.1:8765 USER@YOUR_SERVER\n'
         'Then follow docs/mornye.md to run spotify_login.py with your Client ID.\n'

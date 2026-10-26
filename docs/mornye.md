@@ -99,7 +99,7 @@ runtime/mornye/.venv/bin/python integrations/mornye/spotify_login.py YOUR_CLIENT
 
 Open the printed authorization URL in the browser on the computer running the tunnel. Spotify redirects to the loopback callback. The helper validates OAuth state, exchanges the code using PKCE, and stores the token with file mode `0600` in a `0700` state directory. It expires the login attempt after ten minutes.
 
-In a private Telegram chat, send `/daylist <your full Spotify daylist URL>`. Future `/daylist` commands read the playlist's current contents. If Spotify restricts its personalized shared view, save a copy as a playlist you own and send that URL instead.
+In a private Telegram chat, send `/daylist <your full Spotify daylist URL>`. Future `/daylist` commands first try your account-authorized API, then read the saved shared URL if necessary. A personalized shared URL can stay frozen while the daylist in your account moves to a different ID. Send `/daylist <current URL>` after Spotify updates it. The bot does not claim that a saved public URL automatically discovers your current personalized daylist. It rejects a shared capture with a different weekday, or a saved URL not selected on the current date. API-authorized playlist results and owned playlist copies are not subject to that shared-capture check. If Spotify restricts its personalized shared view, save a copy as a playlist you own and send that URL instead.
 
 ## Files and playlists
 

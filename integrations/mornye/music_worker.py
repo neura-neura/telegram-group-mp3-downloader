@@ -230,18 +230,20 @@ def public_snapshot(url):
     info['access_method'] = 'shared_link'
     return info, songs
 
-def snapshot(url):
+def snapshot(url, prefer_account=False):
     playlist_id = spotify_playlist(url)
-    try:
-        return public_snapshot(url)
-    except ValueError:
-        pass
-    with httpx.Client(headers={'Authorization': 'Bearer ' + token()}, timeout=45) as client:
+    if not prefer_account or not (STATE / 'spotify_token.json').exists():
+        try:
+            return public_snapshot(url)
+        except ValueError:
+            pass
+    with httpx.Client(headers={'Authorization': 'Bearer ' + token(), 'Cache-Control': 'no-cache'}, timeout=45) as client:
         response = client.get('https://api.spotify.com/v1/playlists/' + playlist_id)
         if response.status_code in (403, 404):
             return public_snapshot(url)
         response.raise_for_status()
         info = response.json()
+        info['access_method'] = 'spotify_oauth'
         tracks = info.get('tracks') or info.get('items')
         if not isinstance(tracks, dict):
             response = client.get(f'https://api.spotify.com/v1/playlists/{playlist_id}/items')
@@ -261,6 +263,26 @@ def snapshot(url):
         if not songs:
             raise ValueError('This playlist has no tracks accessible to your account.')
         return info, songs
+
+def validate_daylist_capture(url, info, settings, explicit_url, now):
+    """Shared personalized URLs can stay frozen even as the account's daylist changes."""
+    if info.get('access_method') != 'shared_link':
+        return
+    # Spotify's shared personalized daylist IDs differ from an owned playlist copy.
+    if not spotify_playlist(url).startswith('37i9dQZF1Fb'):
+        return
+    weekdays = {'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+                'friday': 4, 'saturday': 5, 'sunday': 6,
+                'lunes': 0, 'martes': 1, 'miércoles': 2, 'miercoles': 2,
+                'jueves': 3, 'viernes': 4, 'sábado': 5, 'sabado': 5, 'domingo': 6}
+    words = re.findall(r'[^\W\d_]+', str(info.get('name', '')).casefold())
+    named_days = {weekdays[word] for word in words if word in weekdays}
+    if named_days and now.weekday() not in named_days:
+        raise ValueError('The saved shared daylist belongs to another day. Spotify may give each update a new URL. Send /daylist <current URL> from Spotify. Your Spotify API authorization cannot resolve this personalized daylist automatically.')
+    selected_date = settings.get('daylist_url_selected_date')
+    if not explicit_url and (not selected_date or selected_date != now.date().isoformat()):
+        raise ValueError('The saved shared daylist belongs to another day. Spotify may give each update a new URL. Send /daylist <current URL> from Spotify. Your Spotify API authorization cannot resolve this personalized daylist automatically.')
+
 
 def canonical_url(url):
     allowed = {'open.spotify.com', 'spotify.link', 'spoti.fi', 'tidal.com', 'listen.tidal.com', 'www.tidal.com',
@@ -376,10 +398,13 @@ def run(request):
         if not url:
             raise ValueError('First send /daylist followed by your Spotify daylist URL. Use /spotify to connect your account.')
         spotify_playlist(url)
-        settings['daylist_url'] = url
-        save(settings_path, settings)
-        info, songs = snapshot(url)
+        info, songs = snapshot(url, prefer_account=True)
         date = datetime.now(ZoneInfo(os.getenv('APP_TIMEZONE', 'UTC')))
+        validate_daylist_capture(url, info, settings, bool(request.get('url')), date)
+        settings['daylist_url'] = url
+        if request.get('url'):
+            settings['daylist_url_selected_date'] = date.date().isoformat()
+        save(settings_path, settings)
         name = safe(info['name'])
         # Snapshot id keeps retries in the same directory and distinguishes daylist refreshes.
         folder = MUSIC / 'Spotify' / 'Daylists' / date.strftime('%Y-%m-%d') / (name + ' - ' + safe(info.get('snapshot_id', date.strftime('%H-%M')))[:12])

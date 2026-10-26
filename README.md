@@ -85,13 +85,13 @@ Playlist - Playlist name [identifier].m3u
 Daylist - 2026-01-15 09-30-00 - Daylist name.m3u
 ```
 
-Each `/daylist` request creates a new playlist file even if the snapshot and audio are unchanged. Requests in the same second receive a numeric suffix. Unavailable tracks are excluded; no empty M3U is created when every track fails. Keep the original audio folders when moving a collection of daylists: later M3Us can reference earlier folders.
+Each valid `/daylist` request creates a new playlist file even if the snapshot and audio are unchanged. This timestamps the request, not proof that a shared Spotify snapshot has refreshed. Requests in the same second receive a numeric suffix. Unavailable tracks are excluded; no empty M3U is created when every track fails. Keep the original audio folders when moving a collection of daylists: later M3Us can reference earlier folders.
 
 ## Repeat requests and progress
 
 Music jobs edit one Telegram message approximately every three seconds, then replace it with the final summary. While a job runs, the same request points you back to its progress; another request asks you to wait and resend it afterward. There is no background queue. A process-level lock also prevents a terminal job from racing a bot job.
 
-Completed requests are skipped only after their MP3 files pass format and core-tag checks. Missing files, changed collections, and incomplete reports allow another attempt. Daylists are always read again because their contents change. Daylist deduplication uses exact Spotify track IDs from previous successful reports, not titles alone.
+Completed requests are skipped only after their MP3 files pass format and core-tag checks. Missing files, changed collections, and incomplete reports allow another attempt. Daylists are always read again. Shared personalized URLs can identify a frozen capture instead of the current daylist; send the new URL after Spotify updates it. The bot rejects a saved shared capture from a different day rather than relabeling it as current. Daylist deduplication uses exact Spotify track IDs from previous successful reports, not titles alone.
 
 ## Configuration
 

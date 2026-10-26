@@ -152,6 +152,51 @@ class MusicTests(unittest.TestCase):
         self.assertIsNone(worker.equivalent_single_track_playlist('Albums', [other, other]))
         self.assertIsNone(worker.equivalent_single_track_playlist('Playlists', [other]))
 
+    def test_shared_daylist_freshness_and_new_identifier(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime(2026, 10, 26, 9, 0, tzinfo=ZoneInfo('UTC'))
+        old_url = 'https://open.spotify.com/playlist/37i9dQZF1FbOld'
+        new_url = 'https://open.spotify.com/playlist/37i9dQZF1FbNew'
+        stale = {'name':'breakcore sunday afternoon', 'access_method':'shared_link'}
+        current = {'name':'hard trance monday morning', 'access_method':'shared_link'}
+        with self.assertRaisesRegex(ValueError, 'another day'):
+            worker.validate_daylist_capture(old_url, stale, {}, True, now)
+        with self.assertRaisesRegex(ValueError, 'another day'):
+            worker.validate_daylist_capture(new_url, current, {'daylist_url_selected_date':'2026-10-25'}, False, now)
+        worker.validate_daylist_capture(new_url, current, {}, True, now)
+        worker.validate_daylist_capture(new_url, current, {'daylist_url_selected_date':'2026-10-26'}, False, now)
+        # Owned playlist copies and account-authenticated results aren't shared snapshots.
+        worker.validate_daylist_capture('https://open.spotify.com/playlist/owned', stale, {}, False, now)
+        worker.validate_daylist_capture(new_url, {**stale, 'access_method':'spotify_oauth'}, {}, False, now)
+        worker.STATE.joinpath('settings.json').write_text(json.dumps({'daylist_url':old_url, 'daylist_url_selected_date':'2026-10-25'}))
+        with patch.object(worker, 'snapshot', return_value=(stale, [self.song])), patch.object(worker, 'prepare_sources', side_effect=AssertionError('Stale snapshot reached providers')):
+            with self.assertRaises(ValueError):
+                worker.run({'action':'daylist'})
+        self.assertFalse(list(worker.MUSIC.rglob('*.m3u')))
+        self.assertFalse(list(worker.MUSIC.rglob('snapshot.json')))
+        self.assertEqual(json.loads((worker.STATE/'settings.json').read_text())['daylist_url'], old_url)
+
+    def test_daylist_prefers_account_metadata_before_shared_fallback(self):
+        import httpx
+        worker.STATE.joinpath('spotify_token.json').write_text('{}')
+        url = 'https://open.spotify.com/playlist/example'
+        info = {'name':'Current account playlist', 'tracks':{'items':[{'track':{**self.song, 'type':'track'}}]}}
+        response = httpx.Response(200, json=info, request=httpx.Request('GET', 'https://api.spotify.com/v1/playlists/example'))
+        client = SimpleNamespace(get=lambda *args, **kwargs:response)
+        from unittest.mock import MagicMock
+        manager = MagicMock()
+        manager.__enter__.return_value = client
+        with patch.object(worker, 'token', return_value='TEST_TOKEN'), patch.object(worker.httpx, 'Client', return_value=manager), patch.object(worker, 'public_snapshot', side_effect=AssertionError('Shared data used before account')):
+            result, songs = worker.snapshot(url, prefer_account=True)
+        self.assertEqual(result['access_method'], 'spotify_oauth')
+        self.assertEqual(songs[0]['id'], self.song['id'])
+        response = httpx.Response(404, json={'error':{'status':404}}, request=httpx.Request('GET', 'https://api.spotify.com/v1/playlists/example'))
+        with patch.object(worker, 'token', return_value='TEST_TOKEN'), patch.object(worker.httpx, 'Client', return_value=manager), patch.object(worker, 'public_snapshot', return_value=({'name':'Shared fallback'}, [self.song])) as shared:
+            result, songs = worker.snapshot(url, prefer_account=True)
+            shared.assert_called_once_with(url)
+        self.assertEqual(result['name'], 'Shared fallback')
+
     def test_failed_job_cleans_its_flac_only(self):
         folder = worker.MUSIC/'Spotify/Albums'
         folder.mkdir(parents=True)
