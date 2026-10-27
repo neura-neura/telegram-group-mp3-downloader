@@ -35,7 +35,15 @@ def main():
         expected = json.loads(marker.read_text())
         if not all(path.exists() and expected.get(path.name) == digest(path) for path in targets):
             raise SystemExit('Installed Mornye differs from the patched version. Recreate its environment before reinstalling.')
-        print('Mornye compatibility patches are already applied.')
+        gateway_source = HERE / 'server_browser_network.py'
+        if digest(gateway_source) != digest(targets[-1]):
+            shutil.copy2(gateway_source, targets[-1])
+            expected[targets[-1].name] = digest(targets[-1])
+            marker.write_text(json.dumps(expected, indent=2))
+            marker.chmod(0o600)
+            print('Updated the Mornye browser gateway.')
+        else:
+            print('Mornye compatibility patches are already applied.')
     else:
         if not shutil.which('patch'):
             raise SystemExit('Install the system patch utility before continuing.')

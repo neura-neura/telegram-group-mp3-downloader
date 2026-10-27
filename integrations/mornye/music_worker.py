@@ -317,6 +317,8 @@ def prepare_sources(services):
     from mornye.core.signed_session_mobile import (client_from_manifest,
         auth_backoff_remaining, _clear_auth_backoff, _record_auth_failure, _retry_after_from)
     async def verify():
+        failures = []
+        seen = set()
         for service in services:
             manifest = ROOT / 'mornye-data/extensions' / service.removeprefix('ext:') / 'manifest.json'
             if not manifest.exists():
@@ -324,6 +326,12 @@ def prepare_sources(services):
             config = json.loads(manifest.read_text()).get('signedSession')
             if not config:
                 continue
+            # Several extensions share one provider session. A failed auth
+            # must not be attempted again for each audio source in this job.
+            key = (config.get('baseUrl'), config.get('namespace'))
+            if key in seen:
+                continue
+            seen.add(key)
             client = client_from_manifest(config)
             try:
                 if not client.authenticated and auth_backoff_remaining(client) <= 0:
@@ -331,11 +339,17 @@ def prepare_sources(services):
                         await client.authenticate_with_turnstile(timeout=90)
                         _clear_auth_backoff(client)
                     except Exception as error:
-                        _record_auth_failure(client, _retry_after_from(error))
+                        wait = _retry_after_from(error)
+                        _record_auth_failure(client, wait)
+                        detail = str(error).casefold()
+                        transport = isinstance(error, (TimeoutError, ConnectionError, httpx.TransportError)) or any(
+                            word in detail for word in ('browser stopped responding', 'browser could not', 'gateway service is not running', 'command timeout'))
+                        failures.append('provider_wait' if wait else 'browser_unavailable' if transport else 'verification_required')
             finally:
                 if client._client:
                     await client._client.aclose()
-    asyncio.run(verify())
+        return failures
+    return asyncio.run(verify())
 
 def stable_url(url):
     from urllib.parse import parse_qsl, urlencode, urlunparse
@@ -465,10 +479,12 @@ def run(request):
         process = subprocess.CompletedProcess(command, 0, stdout=json.dumps({'schema_version': 1, 'tracks': [], 'summary': {}}))
         cleanup_flacs(folder, {p for p in folder.rglob('*') if p.suffix.lower() == '.flac'})
     else:
-        prepare_sources(services)
+        auth_failures = prepare_sources(services)
         pause = provider_pause(services)
         if pause > 0:
             import math
+            if auth_failures and 'browser_unavailable' in auth_failures:
+                raise ValueError('Mornye could not connect to its provider browser and reset that connection. No download was started. Retry after the safety pause; no Spotify login is needed.')
             raise ValueError(f'Mornye audio provider verification is pending. Retry in {math.ceil(pause / 60)} min. Audio downloads do not use your Spotify session.')
         # Exclude existing IDs before Mornye can contact any audio provider.
         with tempfile.TemporaryDirectory(prefix='music-csv-', dir=STATE) as temp:

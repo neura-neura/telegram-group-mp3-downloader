@@ -112,3 +112,9 @@ The reviewable diffs in `integrations/mornye/patches/` cover:
 The gateway checks provider origins and uses a private local socket. It does not disable TLS checks or recording-identity validation. There is no guarantee against account suspension, provider restrictions, or changes in service behavior. Keep your Spotify authorization private and review the extensions you install.
 
 A single-track album and its individual song share one static M3U when the exact track ID and recording metadata match. The first valid export is retained; existing duplicate song/album exports are consolidated without moving or deleting audio. Daylist captures and user playlists remain separate.
+
+## Provider browser recovery
+
+The shared gateway starts its browser only when a user request needs it. After fifteen minutes without requests, the next request replaces the old browser before contacting a provider. A local renderer check also detects unresponsive tabs. Timed-out signed requests invalidate the connection and are not replayed automatically.
+
+Provider authentication is attempted once per shared session, even when several audio extensions use it. Transport failures are reported separately from pending verification; provider `Retry-After` and authentication safety pauses remain enforced. Restarting the gateway alone does not authenticate, fetch a daylist, or download audio. After updating the integration files, rerun `install.py` to update the gateway module and restart its service.

@@ -1,5 +1,12 @@
 # Changelog
 
+## Provider connection recovery
+
+- Lazily start the provider browser and replace idle or unresponsive renderers before new requests.
+- Invalidate timed-out signed requests without replaying them; distinguish connection failures from pending verification.
+- Verify each shared provider session once per request and preserve provider retry pauses.
+- Update the installed gateway when rerunning the compatibility installer.
+
 ## Unreleased
 
 ### Added

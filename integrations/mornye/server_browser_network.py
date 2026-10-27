@@ -16,20 +16,44 @@ class GatewayBrowser:
     def __init__(self,origin):
         self.origin=origin
         self.ready=threading.Event();self.error=None;self.loop=None;self.browser=None;self.profile=None
+        self.last_used=0.0
         self.thread=threading.Thread(target=self._run,daemon=True)
         self.thread.start()
         atexit.register(self.close)
     def _run(self):
         self.loop=asyncio.new_event_loop();asyncio.set_event_loop(self.loop)
+        # Browser creation is lazy: restarting this service makes no provider
+        # requests. The next user request owns startup and authentication.
+        self.lock=asyncio.Lock()
+        self.ready.set()
         try:
-            self.loop.run_until_complete(self._start())
-        except BaseException as error:
-            self.error=error;self.ready.set()
-        else:
-            self.ready.set();self.loop.run_forever()
+            self.loop.run_forever()
         finally:
             self.loop.run_until_complete(self._stop())
             self.loop.close()
+
+    async def _ensure_browser(self):
+        idle = time.monotonic() - self.last_used
+        if self.browser and idle > 15 * 60:
+            await self._stop()
+        if self.browser:
+            try:
+                # Check the local renderer before a provider request. A stale
+                # renderer must not turn authentication into a five-minute ban.
+                result = await asyncio.wait_for(self.evaluate('location.origin'), timeout=5)
+                from .solver import _js_value
+                if _js_value(result) != self.origin:
+                    await self._stop()
+            except Exception:
+                await self._stop()
+        if not self.browser:
+            try:
+                await asyncio.wait_for(self._start(), timeout=60)
+            except BaseException:
+                await self._stop()
+                raise
+        self.last_used=time.monotonic()
+
     async def _start(self):
         from pydoll.browser.chromium import Chrome
         from pydoll.commands.page_commands import PageCommands
@@ -46,7 +70,6 @@ class GatewayBrowser:
         }};'''.replace('ORIGIN',json.dumps(self.origin))
         await self.tab._execute_command(PageCommands.add_script_to_evaluate_on_new_document(bridge,run_immediately=True))
         await self.tab.go_to(self.origin+"/v2/challenge?id=mornye-network-start",timeout=40)
-        self.lock=asyncio.Lock()
     async def _stop(self):
         from .solver import _kill_by_profile_dir,_cleanup_pydoll_temp_dirs,_cleanup_profile_dir
         if self.browser:
@@ -55,6 +78,7 @@ class GatewayBrowser:
                 if self.profile:_kill_by_profile_dir(self.profile)
             _cleanup_pydoll_temp_dirs(self.browser)
         if self.profile:_cleanup_profile_dir(self.profile)
+        self.browser=None;self.profile=None;self.tab=None
     def close(self):
         if not self.loop or not self.thread.is_alive():return
         self.loop.call_soon_threadsafe(self.loop.stop)
@@ -69,6 +93,7 @@ class GatewayBrowser:
         return await asyncio.wrap_future(future)
     async def fetch(self,method,url,headers,body,timeout):
         async with self.lock:
+            await self._ensure_browser()
             payload=json.dumps({'method':method,'url':url,'headers':headers,'body':body,'timeout':timeout},ensure_ascii=True)
             script='''(async function(p) {
                 const controller = new AbortController();
@@ -81,7 +106,15 @@ class GatewayBrowser:
                         headers:Object.fromEntries(response.headers.entries()),body:await response.text()};
                 } catch(error) {return {failure:String(error),origin:location.origin};} finally {clearTimeout(timer);}
             })(PAYLOAD);'''.replace('PAYLOAD',payload)
-            result=await self.evaluate(script, await_promise=True)
+            try:
+                result=await asyncio.wait_for(self.evaluate(script, await_promise=True), timeout=timeout+10)
+            except Exception as error:
+                # Do not replay POSTs or signed requests. Invalidate the broken
+                # browser; a later request will start a clean one.
+                await self._stop()
+                raise RuntimeError('Mornye provider browser stopped responding; its connection was reset.') from error
+            finally:
+                self.last_used=time.monotonic()
             from .solver import _js_value
             data=_js_value(result)
             if not isinstance(data,dict) or 'status' not in data:
@@ -92,17 +125,26 @@ class GatewayBrowser:
     async def evaluate(self, script, **kwargs):
         return await self.tab._execute_command({"method":"Runtime.evaluate","params":{"expression":script,"returnByValue":True,**({"awaitPromise":True} if kwargs.get("await_promise") else {})}})
     async def inspect(self):
-        from .solver import _js_value
-        result=await self.evaluate('(function(){return {origin:location.origin,bridge:typeof window.MornyeGrant?.postMessage,grantPresent:!!window.__mornyeServerGrant,status:document.querySelector("#status")?.textContent || ""};})()')
-        return _js_value(result)
+        async with self.lock:
+            if not self.browser:
+                return {'running':False}
+            from .solver import _js_value
+            result=await asyncio.wait_for(self.evaluate('(function(){return {origin:location.origin,bridge:typeof window.MornyeGrant?.postMessage,grantPresent:!!window.__mornyeServerGrant,status:document.querySelector("#status")?.textContent || ""};})()'),timeout=5)
+            return _js_value(result)
 
     async def verify(self,url,timeout):
         async with self.lock:
+            await self._ensure_browser()
+            await self.evaluate('window.__mornyeServerGrant = null')
             await self.tab.go_to(url,timeout=40)
             deadline=time.monotonic()+timeout
             from .solver import _js_value
             while time.monotonic()<deadline:
-                result=await self.evaluate('(function(){return {grant:window.__mornyeServerGrant || null,status:document.querySelector("#status")?.textContent || ""};})()')
+                try:
+                    result=await asyncio.wait_for(self.evaluate('(function(){return {grant:window.__mornyeServerGrant || null,status:document.querySelector("#status")?.textContent || ""};})()'),timeout=5)
+                except Exception as error:
+                    await self._stop()
+                    raise RuntimeError('Mornye provider browser stopped responding during verification.') from error
                 data=_js_value(result) or {}
                 callback=data.get('grant')
                 if callback:
@@ -116,6 +158,7 @@ class GatewayBrowser:
                 if status in {'Network changed during verification','Not found'}:
                     raise RuntimeError(status)
                 await asyncio.sleep(0.3)
+            await self._stop()
             raise TimeoutError('Provider verification did not complete')
 
 def service_for(origin):
